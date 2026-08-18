@@ -207,7 +207,21 @@ th { color: var(--ink-soft); font-weight: 600; font-size: 0.8rem; text-transform
 .bottom-nav a:hover { text-decoration: none; background: var(--surface-2); }
 #app { padding-bottom: 84px; }
 #toast { bottom: 92px; }
-@media (min-width: 900px) { .bottom-nav { display: none; } #app { padding-bottom: 40px; } #toast { bottom: 24px; } }
+
+/* On desktop the same nav becomes a second horizontal bar docked under the
+   topbar instead of disappearing - people still need a way to reach রক্ত
+   দরকার / প্রোফাইল / কল হিষ্ট্রি / সেটিংস without it. */
+@media (min-width: 900px) {
+  .bottom-nav {
+    position: sticky; top: 61px; bottom: auto; left: auto; right: auto;
+    border-top: none; border-bottom: 1px solid var(--line);
+    justify-content: center; gap: 6px; padding: 10px 4px;
+  }
+  .bottom-nav a { flex-direction: row; font-size: 0.85rem; max-width: none; padding: 8px 14px; }
+  .bottom-nav a svg, .bottom-nav a i { width: 17px; height: 17px; }
+  #app { padding-bottom: 40px; }
+  #toast { bottom: 24px; }
+}
 
 /* ------------------------------------------------- back button on auth steps */
 .back-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }

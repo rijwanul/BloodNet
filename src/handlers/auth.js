@@ -25,6 +25,7 @@ export async function handleOtpSend(request, env) {
   const settings = await getSettings(env.DB);
   const existing = await env.DB.prepare("SELECT id FROM users WHERE mobile = ? AND deleted = 0").bind(mobile).first();
   if (purpose === "register" && existing) return err("এই মোবাইল নাম্বারে ইতিমধ্যে একাউন্ট আছে");
+  if (purpose === "change_mobile" && existing) return err("এই মোবাইল নাম্বার ইতিমধ্যে ব্যবহৃত হচ্ছে");
   if (purpose === "reset" && !existing) {
     // Do not reveal whether the account exists.
     return ok({ sent: true });

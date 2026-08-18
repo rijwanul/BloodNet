@@ -5,6 +5,7 @@ import * as donor from "./handlers/donor.js";
 import * as profile from "./handlers/profile.js";
 import * as calls from "./handlers/calls.js";
 import * as admin from "./handlers/admin.js";
+import { runDonationReminderSweep } from "./lib/scheduled.js";
 
 export default {
   async fetch(request, env, ctx) {
@@ -26,6 +27,14 @@ export default {
       return err(`সার্ভার সমস্যা: ${String(e && e.message ? e.message : e)}`, 500);
     }
   },
+
+  // Runs on the cron schedule declared in wrangler.toml. Checks for donors
+  // who said "can_donate" on a call, still haven't logged/declined a
+  // donation 48h later, and haven't already been reminded - then sends the
+  // configurable reminder SMS (see lib/scheduled.js).
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(runDonationReminderSweep(env));
+  },
 };
 
 async function routeApi(request, env, path) {
@@ -44,6 +53,7 @@ async function routeApi(request, env, path) {
 
   // ---- SEEK (রক্ত দরকার) ----
   if (path === "/api/seek/count" && method === "GET") return seek.handleSeekCount(request, env);
+  if (path === "/api/seek/state" && method === "GET") return seek.handleSeekState(request, env);
   if (path === "/api/seek/lock" && method === "POST") return seek.handleSeekLock(request, env);
   if (path === "/api/seek/call-status" && method === "POST") return seek.handleSeekCallStatus(request, env);
   if (path === "/api/seek/donor-number" && method === "GET") return seek.handleSeekDonorNumber(request, env);
@@ -52,8 +62,11 @@ async function routeApi(request, env, path) {
   // ---- DONOR self-service (আমার অবস্থা) ----
   if (path === "/api/donor/status" && method === "GET") return donor.handleDonorStatus(request, env);
   if (path === "/api/donor/eligibility" && method === "POST") return donor.handleDonorEligibility(request, env);
+  if (path === "/api/donor/dismiss-donation-prompt" && method === "POST") return donor.handleDonorDismissDonationPrompt(request, env);
+  if (path === "/api/donor/mode-off" && method === "POST") return donor.handleDonorModeOff(request, env);
   if (path === "/api/donor/note" && method === "POST") return donor.handleDonorNote(request, env);
   if (path === "/api/donor/direct-donation" && method === "POST") return donor.handleDirectDonationEntry(request, env);
+  if (path === "/api/donor/check-new-mobile" && method === "GET") return donor.handleDonorCheckNewMobile(request, env);
   if (path === "/api/donor/change-mobile" && method === "POST") return donor.handleDonorChangeMobile(request, env);
   if (path === "/api/donor/change-location" && method === "POST") return donor.handleDonorChangeLocation(request, env);
 
@@ -66,7 +79,6 @@ async function routeApi(request, env, path) {
   if (path === "/api/profile/visibility" && method === "PUT") return profile.handleProfileVisibility(request, env);
   if (path === "/api/profile/donations" && method === "GET") return profile.handleDonationsList(request, env);
   if (path === "/api/profile/donations" && method === "POST") return profile.handleDonationsAdd(request, env);
-  if (path === "/api/profile/donations/bulk" && method === "POST") return profile.handleDonationsBulkAdd(request, env);
   if (path === "/api/profile/delete" && method === "POST") return profile.handleProfileDelete(request, env);
   if (seg[1] === "u" && seg[2] && method === "GET") return profile.handlePublicProfile(request, env, decodeURIComponent(seg[2]));
 

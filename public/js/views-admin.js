@@ -372,6 +372,8 @@ ViewsAdmin.smsSettings = async function (view) {
     ["sms_enabled_account_created_import", "একাউন্ট তৈরি (এডমিন কর্তৃক ইম্পোর্ট)"],
     ["sms_enabled_otp", "OTP"],
     ["sms_enabled_password_reset", "এডমিন কর্তৃক পাসওয়ার্ড রিসেট"],
+    ["sms_enabled_eligibility_change_by_call", "কলের কারণে এলিজিবিলিটি পরিবর্তন"],
+    ["sms_enabled_donation_reminder", "৪৮ ঘন্টা পর রক্তদান রিমাইন্ডার"],
   ];
   const toggleChecks = {};
   TOGGLE_TYPES.forEach(([key, label]) => {
@@ -392,6 +394,8 @@ ViewsAdmin.smsSettings = async function (view) {
     ["sms_account_created_import", "একাউন্ট তৈরি (ইম্পোর্ট করা)", ["password"]],
     ["sms_otp", "OTP মেসেজ", ["otp"]],
     ["sms_password_reset_by_admin", "এডমিন কর্তৃক পাসওয়ার্ড রিসেট", ["password"]],
+    ["sms_eligibility_change_by_call", "কলের কারণে এলিজিবিলিটি পরিবর্তন", ["status"]],
+    ["sms_donation_reminder", "৪৮ ঘন্টা পর রক্তদান রিমাইন্ডার", ["siteTitle"]],
   ];
   const fields = {};
   templates.forEach(([key, label, vars]) => {
@@ -443,6 +447,8 @@ ViewsAdmin.smsSettings = async function (view) {
 };
 
 // ---------------------------------------------------------------- SITE APIS
+// Only actual third-party credentials live here now - /seek system tuning
+// (call limits, lock time, OTP-for-number-change) moved to Site Settings.
 ViewsAdmin.siteApis = async function (view) {
   const content = adminPage(view, "সাইট এপিআই", "/admin/site-apis");
   const s = await API.get("/api/admin/site-apis");
@@ -463,20 +469,6 @@ ViewsAdmin.siteApis = async function (view) {
   checkRow.appendChild(checkSw);
   card.appendChild(checkRow);
 
-  const otpRow = h("div", { class: "toggle-row" });
-  const otpCb = h("input", { type: "checkbox" }); otpCb.checked = !!s.otp_required_for_number_change;
-  const otpSw = h("label", { class: "switch" }); otpSw.appendChild(otpCb); otpSw.appendChild(h("span", { class: "track" }));
-  otpRow.appendChild(h("div", {}, [h("b", {}, "মোবাইল পরিবর্তনে OTP আবশ্যক?")]));
-  otpRow.appendChild(otpSw);
-  card.appendChild(otpRow);
-
-  const callLimitCount = h("input", { type: "number" }); callLimitCount.value = s.call_limit_count;
-  const callLimitMinutes = h("input", { type: "number" }); callLimitMinutes.value = s.call_limit_minutes;
-  const lockMinutes = h("input", { type: "number" }); lockMinutes.value = s.donor_lock_minutes;
-  card.appendChild(h("div", { class: "field" }, [h("label", {}, "কল লিমিট (সংখ্যা)"), callLimitCount]));
-  card.appendChild(h("div", { class: "field" }, [h("label", {}, "কল লিমিট (মিনিট)"), callLimitMinutes]));
-  card.appendChild(h("div", { class: "field" }, [h("label", {}, "ডোনার লক সময় (মিনিট)"), lockMinutes]));
-
   const saveBtn = h("button", { class: "btn btn-primary" }, "সংরক্ষণ করুন");
   card.appendChild(saveBtn);
   content.appendChild(card);
@@ -485,8 +477,7 @@ ViewsAdmin.siteApis = async function (view) {
     try {
       await API.put("/api/admin/site-apis", {
         imgbb_api_key: imgbb.value, donorbd_api_key: donorbdKey.value, donorbd_base_url: donorbdUrl.value,
-        donorbd_check_before_claim: checkCb.checked, otp_required_for_number_change: otpCb.checked,
-        call_limit_count: callLimitCount.value, call_limit_minutes: callLimitMinutes.value, donor_lock_minutes: lockMinutes.value,
+        donorbd_check_before_claim: checkCb.checked,
       });
       toast("সংরক্ষণ করা হয়েছে");
     } catch (e) { toast(e.message); }
@@ -511,6 +502,10 @@ ViewsAdmin.siteSettings = async function (view) {
     card.appendChild(h("div", { class: "field" }, [h("label", {}, label), f]));
   });
 
+  const shareBaseField = h("input", { type: "text", placeholder: `খালি রাখলে ${location.origin} ব্যবহৃত হবে` });
+  shareBaseField.value = s.profile_share_base_url || "";
+  card.appendChild(h("div", { class: "field" }, [h("label", {}, "প্রোফাইল শেয়ার URL এর বেস (যেমনঃ নিজস্ব শর্টলিংক ডোমেইন)"), shareBaseField]));
+
   const waitMonths = h("input", { type: "number", min: "0" }); waitMonths.value = s.eligibility_wait_months;
   card.appendChild(h("div", { class: "field" }, [h("label", {}, "এলিজিবিলিটি টাইমলাইন (মাস, ০ = ম্যানুয়াল)"), waitMonths]));
 
@@ -524,12 +519,66 @@ ViewsAdmin.siteSettings = async function (view) {
   delRow.appendChild(delSw);
   card.appendChild(delRow);
 
-  const saveBtn = h("button", { class: "btn btn-primary" }, "সংরক্ষণ করুন");
-  card.appendChild(saveBtn);
+  const seekRow = h("div", { class: "toggle-row" });
+  const seekCb = h("input", { type: "checkbox" }); seekCb.checked = !!s.show_seek_option;
+  const seekSw = h("label", { class: "switch" }); seekSw.appendChild(seekCb); seekSw.appendChild(h("span", { class: "track" }));
+  seekRow.appendChild(h("div", {}, [h("b", {}, "হোমপেজে \"রক্ত দরকার\" দেখানো হবে?")]));
+  seekRow.appendChild(seekSw);
+  card.appendChild(seekRow);
+
+  const joinRow = h("div", { class: "toggle-row" });
+  const joinCb = h("input", { type: "checkbox" }); joinCb.checked = !!s.show_join_option;
+  const joinSw = h("label", { class: "switch" }); joinSw.appendChild(joinCb); joinSw.appendChild(h("span", { class: "track" }));
+  joinRow.appendChild(h("div", {}, [h("b", {}, "হোমপেজে \"রক্ত দিতে প্রস্তুত\" দেখানো হবে?")]));
+  joinRow.appendChild(joinSw);
+  card.appendChild(joinRow);
+
   content.appendChild(card);
 
+  // ---- seek সিষ্টেম subheading ----
+  const seekCard = h("div", { class: "card stack" });
+  seekCard.appendChild(h("h3", {}, "সিক সিষ্টেম (/seek)"));
+
+  const otpRow = h("div", { class: "toggle-row" });
+  const otpCb = h("input", { type: "checkbox" }); otpCb.checked = !!s.otp_required_for_number_change;
+  const otpSw = h("label", { class: "switch" }); otpSw.appendChild(otpCb); otpSw.appendChild(h("span", { class: "track" }));
+  otpRow.appendChild(h("div", {}, [h("b", {}, "মোবাইল পরিবর্তনে OTP আবশ্যক?")]));
+  otpRow.appendChild(otpSw);
+  seekCard.appendChild(otpRow);
+
+  const callLimitCount = h("input", { type: "number" }); callLimitCount.value = s.call_limit_count;
+  const callLimitMinutes = h("input", { type: "number" }); callLimitMinutes.value = s.call_limit_minutes;
+  const lockMinutes = h("input", { type: "number" }); lockMinutes.value = s.donor_lock_minutes;
+  const timerSeconds = h("input", { type: "number", min: "1" }); timerSeconds.value = s.call_status_timer_seconds || "20";
+  seekCard.appendChild(h("div", { class: "field" }, [h("label", {}, "কল লিমিট (সংখ্যা)"), callLimitCount]));
+  seekCard.appendChild(h("div", { class: "field" }, [h("label", {}, "কল লিমিট (মিনিট)"), callLimitMinutes]));
+  seekCard.appendChild(h("div", { class: "field" }, [h("label", {}, "ডোনার লক সময় (মিনিট)"), lockMinutes]));
+  seekCard.appendChild(h("div", { class: "field" }, [h("label", {}, "কল ষ্ট্যাটাস টাইমার (সেকেন্ড)"), timerSeconds]));
+  content.appendChild(seekCard);
+
+  // ---- default avatars ----
+  const avatarCard = h("div", { class: "card stack" });
+  avatarCard.appendChild(h("h3", {}, "ডিফল্ট এভাটার"));
+  avatarCard.appendChild(h("p", { class: "small muted" }, "প্রোফাইল ছবি ছাড়া ইউজারদের জন্য এলোমেলোভাবে একটি এভাটার ব্যবহৃত হবে। প্রতি লাইনে একটি ছবির URL দিন।"));
+  let avatars = [];
+  try { avatars = JSON.parse(s.default_avatars_json || "[]"); } catch { avatars = []; }
+  const avatarsField = h("textarea", { placeholder: "https://.../avatar1.png" });
+  avatarsField.value = avatars.join("\n");
+  avatarCard.appendChild(h("div", { class: "field" }, avatarsField));
+  content.appendChild(avatarCard);
+
+  const saveBtn = h("button", { class: "btn btn-primary" }, "সংরক্ষণ করুন");
+  content.appendChild(saveBtn);
+
   saveBtn.onclick = async () => {
-    const payload = { eligibility_wait_months: waitMonths.value, self_deletion_enabled: delCb.checked, session_days: sessionDays.value };
+    const avatarList = avatarsField.value.split("\n").map((s) => s.trim()).filter(Boolean);
+    const payload = {
+      eligibility_wait_months: waitMonths.value, self_deletion_enabled: delCb.checked, session_days: sessionDays.value,
+      show_seek_option: seekCb.checked, show_join_option: joinCb.checked, profile_share_base_url: shareBaseField.value,
+      otp_required_for_number_change: otpCb.checked, call_limit_count: callLimitCount.value, call_limit_minutes: callLimitMinutes.value,
+      donor_lock_minutes: lockMinutes.value, call_status_timer_seconds: timerSeconds.value,
+      default_avatars_json: JSON.stringify(avatarList),
+    };
     Object.entries(fields).forEach(([k, f]) => (payload[k] = f.value));
     try {
       await API.put("/api/admin/site-settings", payload);

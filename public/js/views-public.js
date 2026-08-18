@@ -10,15 +10,18 @@ ViewsPublic.landing = function (view) {
     h("p", { class: "subhead" }, s.welcomeSubheading || "রক্তের প্রয়োজনে খুঁজে নিন ডোনারদের"),
     h("p", { class: "fineprint" }, s.welcomeSmallText || ""),
   ]));
-  const cards = h("div", { class: "choice-cards" }, [
-    h("a", { href: "/seek", "data-link": "", class: "choice-card choice-card--seek" }, [
+  const cardDefs = [];
+  if (s.showSeekOption !== false) {
+    cardDefs.push(h("a", { href: "/seek", "data-link": "", class: "choice-card choice-card--seek" }, [
       icon("hand-heart", "icon"), h("b", {}, "রক্ত দরকার"), h("span", { class: "muted" }, "রক্তদাতা খুঁজুন এখনই"),
-    ]),
-    h("a", { href: "/join", "data-link": "", class: "choice-card choice-card--donate" }, [
+    ]));
+  }
+  if (s.showJoinOption !== false) {
+    cardDefs.push(h("a", { href: "/join", "data-link": "", class: "choice-card choice-card--donate" }, [
       icon("droplets", "icon"), h("b", {}, "রক্ত দিতে প্রস্তুত"), h("span", { class: "muted" }, "ডোনার হিসেবে যুক্ত হোন"),
-    ]),
-  ]);
-  view.appendChild(cards);
+    ]));
+  }
+  view.appendChild(h("div", { class: "choice-cards" }, cardDefs));
   view.appendChild(pulseDivider());
   view.appendChild(h("p", { class: "center small" }, [
     !APP.user ? h("a", { href: "/login", "data-link": "" }, "লগইন") : h("span", { class: "muted" }, `স্বাগতম, ${APP.user.name || APP.user.mobile}`),
@@ -28,6 +31,9 @@ ViewsPublic.landing = function (view) {
 // ------------------------------------------------------------ ACCOUNT GATE
 // Shared mobile -> (password | OTP+new password) flow used by both /seek
 // (as a requester) and /join (as a donor). Calls onDone() once logged in.
+// If the person is ALREADY logged in, this is skipped entirely by callers -
+// see ViewsPublic.seek/join below - so this function only ever runs for
+// anonymous visitors.
 function renderAccountGate(container, { intro, onDone }) {
   container.innerHTML = "";
   const card = h("div", { class: "card stack" });
@@ -56,7 +62,7 @@ function renderAccountGate(container, { intro, onDone }) {
 }
 
 function backRow(onBack) {
-  const btn = h("button", { class: "back-btn", type: "button" }, [icon("chevron-left"), "মোবাইল নাম্বার পরিবর্তন করুন"]);
+  const btn = h("button", { class: "back-btn", type: "button" }, [icon("chevron-left"), "পূর্ববর্তী ধাপ"]);
   btn.onclick = onBack;
   return h("div", { class: "back-row" }, btn);
 }
@@ -87,7 +93,12 @@ function renderPasswordStep(container, mobile, onDone, onBack) {
       onDone(user);
     } catch (e) { errBox.textContent = e.message; } finally { loginBtn.disabled = false; }
   };
-  forgotLink.onclick = (e) => { e.preventDefault(); renderOtpStep(container, mobile, "reset", onDone, onBack); };
+  // Going to "forgot password" by mistake shouldn't strand the person there -
+  // they can return to this same password step for the same mobile number.
+  forgotLink.onclick = (e) => {
+    e.preventDefault();
+    renderOtpStep(container, mobile, "reset", onDone, () => renderPasswordStep(container, mobile, onDone, onBack));
+  };
 }
 
 async function renderOtpStep(container, mobile, purpose, onDone, onBack) {
@@ -156,40 +167,69 @@ ViewsPublic.forgotPassword = function (view) {
 };
 
 // ------------------------------------------------------------------ SEEK
-ViewsPublic.seek = function (view) {
+// Bookmarkable and refresh-safe: on mount, if the requester is logged in
+// and already has an active donor lock (from before a refresh), jump
+// straight back to that donor card instead of re-asking for a blood group.
+ViewsPublic.seek = async function (view) {
+  view.innerHTML = "";
+
+  if (APP.user) {
+    try {
+      const state = await API.get("/api/seek/state");
+      if (state.active && state.donor) {
+        const box = h("div");
+        view.appendChild(box);
+        renderDonorCard(box, state.donor, state.bloodGroup);
+        return;
+      }
+    } catch { /* fall through to normal flow */ }
+  }
+
+  renderBloodGroupStep(view);
+};
+
+function renderBloodGroupStep(view) {
   view.innerHTML = "";
   let selectedGroup = null;
 
   const groupCard = h("div", { class: "card stack" });
   groupCard.appendChild(h("h2", {}, "কোন গ্রুপের রক্ত প্রয়োজন?"));
   const countLine = h("p", { class: "muted" });
+  const groupErr = h("div", { class: "field-error" });
+  const continueBtn = h("button", { class: "btn btn-primary", style: "display:none" }, "এগিয়ে যান");
+
   const grid = bloodGroupGrid(null, async (g) => {
     selectedGroup = g;
+    groupErr.textContent = "";
     countLine.textContent = "লোড হচ্ছে…";
     try {
       const { count } = await API.get(`/api/seek/count?bloodGroup=${encodeURIComponent(g)}`);
-      countLine.textContent = `${count} জন উপযুক্ত রক্তদাতা রয়েছেন।`;
-      gateBox.style.display = "block";
+      countLine.textContent = `${toBnDigits(count)} জন উপযুক্ত রক্তদাতা রয়েছেন।`;
+      continueBtn.style.display = "block";
     } catch (e) { countLine.textContent = ""; toast(e.message); }
   });
   groupCard.appendChild(grid);
   groupCard.appendChild(countLine);
+  groupCard.appendChild(groupErr);
+  groupCard.appendChild(continueBtn);
   view.appendChild(groupCard);
 
-  const gateBox = h("div", { style: "display:none" });
-  view.appendChild(gateBox);
-
-  renderAccountGate(gateBox, {
-    intro: "আপনার মোবাইল নাম্বার প্রদান করুন…",
-    onDone: () => startDonorSearch(view, selectedGroup),
-  });
-  // hide gate initially until a blood group is chosen
-  gateBox.style.display = APP.user ? "block" : "none";
-  if (APP.user) {
-    // if already logged in, wait for group selection then go straight to search
-    grid.addEventListener("click", () => {}, true);
-  }
-};
+  // A blood group must be selected before proceeding - enforced here
+  // regardless of login state, not only after the login gate.
+  continueBtn.onclick = () => {
+    if (!selectedGroup) { groupErr.textContent = "রক্তের গ্রুপ নির্বাচন করুন"; return; }
+    if (APP.user) {
+      startDonorSearch(view, selectedGroup);
+    } else {
+      const gateBox = h("div");
+      view.appendChild(gateBox);
+      renderAccountGate(gateBox, {
+        intro: "আপনার মোবাইল নাম্বার প্রদান করুন…",
+        onDone: () => startDonorSearch(view, selectedGroup),
+      });
+    }
+  };
+}
 
 async function startDonorSearch(view, bloodGroup) {
   view.innerHTML = "";
@@ -228,7 +268,6 @@ async function showNextDonor(box, bloodGroup) {
     const list = h("div", { class: "link-list" });
     (res.externalSources || []).forEach((s) => list.appendChild(h("a", { href: s.url, target: "_blank", rel: "noopener" }, s.name)));
     card.appendChild(list);
-    card.appendChild(h("button", { class: "btn btn-outline", onclick: () => showNextDonor(box, bloodGroup) }, "আবার চেষ্টা করুন"));
     box.appendChild(card);
     return;
   }
@@ -237,14 +276,15 @@ async function showNextDonor(box, bloodGroup) {
 }
 
 function renderDonorCard(box, donor, bloodGroup) {
+  box.innerHTML = "";
   const card = h("div", { class: "card donor-card" });
-  card.appendChild(h("img", { class: "donor-card__pic", src: donor.profilePicUrl || "/img/logo.png", alt: "" }));
-  card.appendChild(h("div", { class: "donor-card__name" }, donor.username ? h("a", { href: `/${donor.username}`, "data-link": "" }, donor.name) : donor.name));
-  const meta = donor.totalDonations > 0 ? `${donor.bloodGroup} (${donor.totalDonations} বার রক্তদান)` : donor.bloodGroup;
+  card.appendChild(h("img", { class: "donor-card__pic", src: donor.profilePicUrl || pickDefaultAvatar(), alt: "" }));
+  card.appendChild(h("div", { class: "donor-card__name" }, personLink(donor.name, donor.username)));
+  const meta = donor.totalDonations > 0 ? `${donor.bloodGroup} (${toBnDigits(donor.totalDonations)} বার রক্তদান)` : donor.bloodGroup;
   card.appendChild(h("div", { class: "donor-card__meta" }, meta));
 
   const details = h("div", { class: "donor-card__details stack" });
-  if (donor.addressSummary) details.appendChild(h("div", {}, [h("b", {}, "ঠিকানা: "), donor.addressSummary]));
+  if (donor.addressSummary) details.appendChild(h("div", {}, [h("b", {}, "সংক্ষিপ্ত ঠিকানা: "), donor.addressSummary]));
   if (donor.lastDonationDate) details.appendChild(h("div", {}, [h("b", {}, "সর্বশেষ রক্তদান: "), bnDate(donor.lastDonationDate)]));
   card.appendChild(details);
 
@@ -258,36 +298,54 @@ function renderDonorCard(box, donor, bloodGroup) {
   card.appendChild(statusBox);
   box.appendChild(card);
 
+  const timerSeconds = (APP.settings && APP.settings.callStatusTimerSeconds) || 20;
+  let revealed = false;
+
   callBtn.onclick = async () => {
-    callBtn.disabled = true;
-    let realMobile;
-    try {
-      const res = await API.get(`/api/seek/donor-number?donorId=${donor.id}`);
-      realMobile = res.mobile;
-    } catch (e) {
-      toast(e.message);
+    // The button stays enabled/visible even after the timer elapses so the
+    // requester can tap it again to redial - it does not lock or disappear.
+    if (!revealed) {
+      callBtn.disabled = true;
+      let realMobile;
+      try {
+        const res = await API.get(`/api/seek/donor-number?donorId=${donor.id}`);
+        realMobile = res.mobile;
+      } catch (e) {
+        toast(e.message);
+        callBtn.disabled = false;
+        return;
+      }
+      revealed = true;
+      numberLine.textContent = `নাম্বার: ${realMobile}`;
+      numberLine.style.display = "block";
+      callBtn.dataset.mobile = realMobile;
       callBtn.disabled = false;
-      return;
+      callBtn.innerHTML = "";
+      callBtn.appendChild(icon("phone", "small"));
+      callBtn.append(" আবার কল করুন (" + realMobile + ")");
     }
-    numberLine.textContent = `নাম্বার: ${realMobile}`;
-    numberLine.style.display = "block";
-    window.location.href = `tel:${realMobile}`;
-    let seconds = 20;
-    callBtn.textContent = `২০ সেকেন্ড অপেক্ষা করুন (${seconds})`;
+    window.location.href = `tel:${callBtn.dataset.mobile}`;
+
+    if (statusBox.dataset.started) return; // countdown/status UI only starts once
+    statusBox.dataset.started = "1";
+    let seconds = timerSeconds;
+    const timerLine = h("p", { class: "center small muted" }, `${toBnDigits(seconds)} সেকেন্ড পর ষ্ট্যাটাস আপডেট করতে পারবেন…`);
+    statusBox.style.display = "block";
+    statusBox.appendChild(timerLine);
     const timer = setInterval(() => {
       seconds--;
       if (seconds <= 0) {
         clearInterval(timer);
-        statusBox.style.display = "block";
+        timerLine.remove();
         renderCallStatusButtons(statusBox, box, donor, bloodGroup);
       } else {
-        callBtn.textContent = `২০ সেকেন্ড অপেক্ষা করুন (${seconds})`;
+        timerLine.textContent = `${toBnDigits(seconds)} সেকেন্ড পর ষ্ট্যাটাস আপডেট করতে পারবেন…`;
       }
     }, 1000);
   };
 
   box.appendChild(h("p", { class: "center small", style: "margin-top:14px" },
-    h("a", { href: "#", onclick: (e) => { e.preventDefault(); ViewsPublic.seek(document.getElementById("view")); } }, "আবার শুরু")));
+    h("a", { href: "#", onclick: (e) => { e.preventDefault(); renderBloodGroupStep(document.getElementById("view")); } }, "আবার শুরু")));
 }
 
 function renderCallStatusButtons(statusBox, box, donor, bloodGroup) {
@@ -301,43 +359,44 @@ function renderCallStatusButtons(statusBox, box, donor, bloodGroup) {
   ];
   const row = h("div", { class: "stack" });
   options.forEach((opt) => {
-    row.appendChild(h("button", { class: "btn btn-outline", onclick: () => handleCallStatus(box, donor, bloodGroup, opt.key) }, opt.label));
+    row.appendChild(h("button", { class: "btn btn-outline", onclick: () => handleCallStatus(statusBox, box, donor, bloodGroup, opt.key) }, opt.label));
   });
   statusBox.appendChild(row);
 }
 
-async function handleCallStatus(box, donor, bloodGroup, status) {
+async function handleCallStatus(statusBox, box, donor, bloodGroup, status) {
   if (status === "cannot_donate") {
-    box.innerHTML = "";
-    const card = h("div", { class: "card stack" });
+    statusBox.innerHTML = "";
+    const card = h("div", { class: "stack" });
     card.appendChild(h("h3", {}, "কেন রক্ত দিতে পারবেন না?"));
     CANNOT_REASONS.forEach((r) => {
-      card.appendChild(h("button", { class: "btn btn-outline", onclick: () => submitCallStatus(box, donor, bloodGroup, status, r.key) }, r.label));
+      card.appendChild(h("button", { class: "btn btn-outline", onclick: () => submitCallStatus(statusBox, box, donor, bloodGroup, status, r.key) }, r.label));
     });
-    box.appendChild(card);
+    statusBox.appendChild(card);
     return;
   }
-  await submitCallStatus(box, donor, bloodGroup, status, null);
+  await submitCallStatus(statusBox, box, donor, bloodGroup, status, null);
 }
 
-async function submitCallStatus(box, donor, bloodGroup, status, cannotReason) {
+async function submitCallStatus(statusBox, box, donor, bloodGroup, status, cannotReason) {
   try {
     await API.post("/api/seek/call-status", { donorId: donor.id, status, cannotReason });
-  } catch (e) { toast(e.message); }
+  } catch (e) { toast(e.message); return; }
 
-  box.innerHTML = "";
+  statusBox.innerHTML = "";
+  const resultCard = h("div", { class: "center stack" });
   if (status === "can_donate") {
-    const card = h("div", { class: "card center stack" });
-    card.appendChild(h("p", {}, "আলহামদুলিল্লাহ। রক্ত ম্যানেজ হয়েছে।"));
-    card.appendChild(h("a", { href: "/", "data-link": "", class: "btn btn-primary" }, "মেইন মেনু"));
-    box.appendChild(card);
+    resultCard.appendChild(h("p", {}, "আলহামদুলিল্লাহ। রক্ত ম্যানেজ হয়েছে।"));
+    resultCard.appendChild(h("a", { href: "/", "data-link": "", class: "btn btn-primary" }, "মেইন মেনু"));
   } else {
-    const card = h("div", { class: "card center stack" });
-    card.appendChild(h("p", {}, "ষ্ট্যাটাস সংরক্ষণ করা হয়েছে।"));
-    card.appendChild(h("button", { class: "btn btn-primary", onclick: () => showNextDonor(box, bloodGroup) }, "পরবর্তী ডোনার দেখুন"));
-    card.appendChild(h("a", { href: "/", "data-link": "", class: "btn btn-outline" }, "মেইন মেনু"));
-    box.appendChild(card);
+    resultCard.appendChild(h("p", {}, "ষ্ট্যাটাস সংরক্ষণ করা হয়েছে।"));
+    // Mistake correction: let the requester pick a different status for the
+    // same call attempt instead of it being permanent.
+    resultCard.appendChild(h("button", { class: "btn btn-outline", onclick: () => renderCallStatusButtons(statusBox, box, donor, bloodGroup) }, "ভুল হয়েছে? আবার নির্বাচন করুন"));
+    resultCard.appendChild(h("button", { class: "btn btn-primary", onclick: () => showNextDonor(box, bloodGroup) }, "পরবর্তী ডোনার দেখুন"));
+    resultCard.appendChild(h("a", { href: "/", "data-link": "", class: "btn btn-outline" }, "মেইন মেনু"));
   }
+  statusBox.appendChild(resultCard);
 }
 
 // ------------------------------------------------------------------ JOIN
@@ -361,7 +420,7 @@ async function renderDonorInfoForm(box) {
   const card = h("div", { class: "card stack" });
   let bloodGroup = null;
   card.appendChild(h("div", { class: "field" }, [h("label", {}, "আপনার রক্তের গ্রুপ"), bloodGroupGrid(null, (g) => (bloodGroup = g))]));
-  const dateField = h("input", { type: "date" });
+  const dateField = h("input", { type: "date", max: todayIsoDate() });
   card.appendChild(h("div", { class: "field" }, [h("label", {}, "সর্বশেষ রক্তদানের তারিখ (যদি থাকে)"), dateField]));
   const addrField = h("input", { type: "text", placeholder: "যেমনঃ পাঁচলাইশ, চট্টগ্রাম" });
   card.appendChild(h("div", { class: "field" }, [h("label", {}, "সংক্ষিপ্ত ঠিকানা"), addrField]));
@@ -387,11 +446,15 @@ ViewsPublic.publicProfile = async function (view, slug) {
   const { profile } = await API.get(`/api/u/${encodeURIComponent(slug)}`);
   view.innerHTML = "";
   const card = h("div", { class: "card donor-card" });
-  card.appendChild(h("img", { class: "donor-card__pic", src: profile.profilePicUrl || "/img/logo.png", alt: "" }));
+  card.appendChild(h("img", { class: "donor-card__pic", src: profile.profilePicUrl || pickDefaultAvatar(), alt: "" }));
   card.appendChild(h("div", { class: "donor-card__name" }, profile.name || profile.username));
   if (profile.isDonor) {
-    const meta = profile.totalDonations > 0 ? `${profile.bloodGroup} (${profile.totalDonations} বার রক্তদান)` : profile.bloodGroup;
+    const meta = profile.totalDonations != null && profile.totalDonations > 0 ? `${profile.bloodGroup} (${toBnDigits(profile.totalDonations)} বার রক্তদান)` : profile.bloodGroup;
     card.appendChild(h("div", { class: "donor-card__meta" }, meta));
+    if (profile.eligibilityLabel) {
+      const badgeClass = profile.eligibilityStatus === "on" ? "badge-on" : profile.eligibilityStatus === "snoozed" ? "badge-snoozed" : "badge-off";
+      card.appendChild(h("div", { style: "margin-top:6px" }, h("span", { class: "badge " + badgeClass }, `বর্তমান এলিজিবিলিটি: ${profile.eligibilityLabel}`)));
+    }
   }
   if (profile.note) card.appendChild(h("div", { class: "donor-card__note" }, `নোট: ${profile.note}`));
   view.appendChild(card);
@@ -401,14 +464,40 @@ ViewsPublic.publicProfile = async function (view, slug) {
   if (profile.addressSummary) info.appendChild(h("div", {}, [h("b", {}, "সংক্ষিপ্ত ঠিকানা: "), profile.addressSummary]));
   if (profile.lastDonationDate) info.appendChild(h("div", {}, [h("b", {}, "সর্বশেষ রক্তদান: "), bnDate(profile.lastDonationDate)]));
   if (profile.mobile) info.appendChild(h("div", {}, [h("b", {}, "মোবাইল: "), profile.mobile]));
+  if (profile.locationName) info.appendChild(h("div", {}, [h("b", {}, "লোকেশন: "), profile.locationName]));
   view.appendChild(info);
+
+  if (profile.donationHistoryVisible) {
+    const donCard = h("div", { class: "card stack" });
+    donCard.appendChild(h("h3", {}, "পূর্বের ডোনেশনসমূহ"));
+    const donations = profile.donations || [];
+    if (!donations.length && !profile.extraDonationCount) {
+      donCard.appendChild(h("p", { class: "muted" }, "কোনো তথ্য নেই"));
+    } else {
+      donations.forEach((d) => donCard.appendChild(h("div", { class: "list-item" }, [
+        h("span", {}, bnDate(d.donation_date)), h("span", { class: "muted" }, d.hospital_name || ""),
+      ])));
+      if (profile.extraDonationCount) donCard.appendChild(h("p", { class: "muted small" }, `…এবং আরো ${toBnDigits(profile.extraDonationCount)} বার`));
+    }
+    view.appendChild(donCard);
+  }
+
+  if (profile.callHistoryVisible) {
+    const callCard = h("div", { class: "card stack" });
+    callCard.appendChild(h("h3", {}, "কল হিষ্ট্রি"));
+    const calls = profile.calls || [];
+    if (!calls.length) callCard.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
+    calls.forEach((c) => callCard.appendChild(h("div", { class: "list-item" }, h("span", {}, [
+      personLink(c.requesterLabel, c.requesterSlug), " " + c.text.replace(c.requesterLabel, "").trim(),
+    ]))));
+    view.appendChild(callCard);
+  }
 
   const other = h("div", { class: "card stack" });
   other.appendChild(h("h3", {}, "অন্যান্য"));
   other.appendChild(h("div", {}, [h("b", {}, "প্ল্যাটফর্মে জয়েন করেছেন: "), bnDate(profile.joinedAt)]));
-  other.appendChild(h("div", {}, [h("b", {}, "সর্বমোট কল করেছেন: "), String(profile.totalCallsMade)]));
-  if (profile.donorsManagedCount > 0) other.appendChild(h("div", {}, [h("b", {}, "রক্তদাতা পেয়েছেন: "), `${profile.donorsManagedCount} বার`]));
-  if (profile.isDonor) other.appendChild(h("div", {}, [h("b", {}, "সর্বমোট কল রিসিভ করেছেন: "), String(profile.totalCallsReceived)]));
-  if (profile.locationName) other.appendChild(h("div", {}, [h("b", {}, "লোকেশন: "), profile.locationName]));
+  other.appendChild(h("div", {}, [h("b", {}, "সর্বমোট কল করেছেন: "), toBnDigits(profile.totalCallsMade)]));
+  if (profile.donorsManagedCount > 0) other.appendChild(h("div", {}, [h("b", {}, "রক্তদাতা পেয়েছেন: "), `${toBnDigits(profile.donorsManagedCount)} বার`]));
+  if (profile.isDonor) other.appendChild(h("div", {}, [h("b", {}, "সর্বমোট কল রিসিভ করেছেন: "), toBnDigits(profile.totalCallsReceived)]));
   view.appendChild(other);
 };

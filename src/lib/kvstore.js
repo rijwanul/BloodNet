@@ -39,11 +39,13 @@ export async function getLock(kv, requesterId) {
   return raw ? JSON.parse(raw) : null;
 }
 
-export async function setLock(kv, requesterId, donorId, minutes) {
+export async function setLock(kv, requesterId, donorId, minutes, bloodGroup) {
   const ttl = Math.max(60, Math.round(minutes * 60));
-  await kv.put(`lock:${requesterId}`, JSON.stringify({ donorId, lockedAt: Date.now() }), {
-    expirationTtl: ttl,
-  });
+  await kv.put(
+    `lock:${requesterId}`,
+    JSON.stringify({ donorId, bloodGroup, lockedAt: Date.now(), expiresAt: Date.now() + ttl * 1000 }),
+    { expirationTtl: ttl }
+  );
 }
 
 export async function clearLock(kv, requesterId) {

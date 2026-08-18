@@ -314,10 +314,6 @@ export async function handleSiteApisGet(request, env) {
     donorbd_api_key: settings.donorbd_api_key,
     donorbd_base_url: settings.donorbd_base_url,
     donorbd_check_before_claim: settings.donorbd_check_before_claim === "1",
-    call_limit_count: settings.call_limit_count,
-    call_limit_minutes: settings.call_limit_minutes,
-    donor_lock_minutes: settings.donor_lock_minutes,
-    otp_required_for_number_change: settings.otp_required_for_number_change === "1",
   });
 }
 
@@ -329,11 +325,7 @@ export async function handleSiteApisUpdate(request, env) {
   for (const k of ["imgbb_api_key", "donorbd_api_key", "donorbd_base_url"]) {
     if (typeof body[k] === "string") patch[k] = body[k];
   }
-  for (const k of ["call_limit_count", "call_limit_minutes", "donor_lock_minutes"]) {
-    if (body[k] !== undefined) patch[k] = String(parseInt(body[k], 10) || 0);
-  }
   if (body.donorbd_check_before_claim !== undefined) patch.donorbd_check_before_claim = body.donorbd_check_before_claim ? "1" : "0";
-  if (body.otp_required_for_number_change !== undefined) patch.otp_required_for_number_change = body.otp_required_for_number_change ? "1" : "0";
   await setSettings(env.DB, patch);
   await logActivity(env.DB, { actorUser: admin, category: "settings", actionText: "সাইট এপিআই সেটিংস আপডেট করেছেন" });
   return ok({ updated: true });
@@ -424,6 +416,16 @@ export async function handleSiteSettingsGet(request, env) {
     eligibility_wait_months: settings.eligibility_wait_months,
     self_deletion_enabled: settings.self_deletion_enabled === "1",
     session_days: settings.session_days || "90",
+    show_seek_option: settings.show_seek_option !== "0",
+    show_join_option: settings.show_join_option !== "0",
+    profile_share_base_url: settings.profile_share_base_url || "",
+    default_avatars_json: settings.default_avatars_json || "[]",
+    // moved here from Site APIs - these govern the /seek system, not third-party credentials
+    otp_required_for_number_change: settings.otp_required_for_number_change !== "0",
+    call_limit_count: settings.call_limit_count,
+    call_limit_minutes: settings.call_limit_minutes,
+    donor_lock_minutes: settings.donor_lock_minutes,
+    call_status_timer_seconds: settings.call_status_timer_seconds || "20",
   });
 }
 
@@ -432,12 +434,18 @@ export async function handleSiteSettingsUpdate(request, env) {
   if (resp) return resp;
   const body = await readJson(request);
   const patch = {};
-  for (const k of ["site_title", "logo_url", "favicon_url", "social_preview_url", "theme_color", "welcome_heading", "welcome_subheading", "welcome_small_text"]) {
+  for (const k of ["site_title", "logo_url", "favicon_url", "social_preview_url", "theme_color", "welcome_heading", "welcome_subheading", "welcome_small_text", "profile_share_base_url", "default_avatars_json"]) {
     if (typeof body[k] === "string") patch[k] = body[k];
   }
   if (body.eligibility_wait_months !== undefined) patch.eligibility_wait_months = String(parseInt(body.eligibility_wait_months, 10) || 0);
   if (body.self_deletion_enabled !== undefined) patch.self_deletion_enabled = body.self_deletion_enabled ? "1" : "0";
   if (body.session_days !== undefined) patch.session_days = String(Math.max(1, parseInt(body.session_days, 10) || 90));
+  if (body.show_seek_option !== undefined) patch.show_seek_option = body.show_seek_option ? "1" : "0";
+  if (body.show_join_option !== undefined) patch.show_join_option = body.show_join_option ? "1" : "0";
+  if (body.otp_required_for_number_change !== undefined) patch.otp_required_for_number_change = body.otp_required_for_number_change ? "1" : "0";
+  for (const k of ["call_limit_count", "call_limit_minutes", "donor_lock_minutes", "call_status_timer_seconds"]) {
+    if (body[k] !== undefined) patch[k] = String(Math.max(1, parseInt(body[k], 10) || 1));
+  }
   await setSettings(env.DB, patch);
   await logActivity(env.DB, { actorUser: admin, category: "settings", actionText: "সাইট সেটিংস আপডেট করেছেন" });
   return ok({ updated: true });
@@ -458,7 +466,17 @@ export async function handlePublicSettings(request, env) {
     callLimitCount: settings.call_limit_count,
     callLimitMinutes: settings.call_limit_minutes,
     selfDeletionEnabled: settings.self_deletion_enabled === "1",
+    callStatusTimerSeconds: parseInt(settings.call_status_timer_seconds || "20", 10),
+    showSeekOption: settings.show_seek_option !== "0",
+    showJoinOption: settings.show_join_option !== "0",
+    otpRequiredForNumberChange: settings.otp_required_for_number_change !== "0",
+    profileShareBaseUrl: settings.profile_share_base_url || "",
+    defaultAvatars: safeParseJson(settings.default_avatars_json, []),
   });
+}
+
+function safeParseJson(str, fallback) {
+  try { return JSON.parse(str || "null") ?? fallback; } catch { return fallback; }
 }
 
 // ------------------------------------------------------------ PERMISSIONS

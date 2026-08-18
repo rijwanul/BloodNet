@@ -70,10 +70,10 @@ function renderTopbar() {
   refreshIcons();
 }
 
-// Bottom tab bar: আমার অবস্থা (donors only) / রক্ত দরকার / আমার প্রোফাইল /
-// কল হিষ্ট্রি / সেটিংস. Only shown once logged in - visible on both mobile
-// (fixed to the bottom) and desktop (hidden via CSS, topbar covers admin
-// access + logout there instead).
+// Bottom tab bar: আমার অবস্থা (donors only) / রক্ত দরকার / প্রোফাইল /
+// কল হিষ্ট্রি / সেটিংস. Only shown once logged in. On mobile it's fixed to
+// the bottom; on desktop it becomes a horizontal bar under the topbar
+// (CSS-only difference) so every logged-in feature stays reachable on both.
 function renderBottomNav(activePath) {
   let nav = document.getElementById("bottomNav");
   if (!APP.user) {
@@ -89,7 +89,7 @@ function renderBottomNav(activePath) {
   const items = [];
   if (APP.user.isDonor) items.push(["/quick", "hand-heart", "আমার অবস্থা"]);
   items.push(["/seek", "search", "রক্ত দরকার"]);
-  items.push([profileHref, "user", "আমার প্রোফাইল"]);
+  items.push([profileHref, "user", "প্রোফাইল"]);
   items.push(["/calls", "phone-call", "কল হিষ্ট্রি"]);
   items.push(["/settings", "settings", "সেটিংস"]);
 

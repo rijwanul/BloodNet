@@ -26,6 +26,28 @@ function refreshIcons() {
   if (window.lucide) window.lucide.createIcons();
 }
 
+// Icons are async in two ways: (1) the Lucide CDN script itself loads
+// after our own JS runs, so early refreshIcons() calls are no-ops, and
+// (2) every dynamic re-render (password fields, admin forms, modals, etc)
+// creates fresh <i data-lucide> placeholders that need converting. Rather
+// than sprinkle refreshIcons() after every single DOM mutation site (easy
+// to miss - this is exactly why the password-eye icon was invisible until
+// something else happened to trigger a refresh elsewhere), a single
+// MutationObserver here catches every insertion automatically, and a
+// one-time full sweep runs the moment the Lucide script finishes loading
+// so anything rendered before the library was ready still gets its icons
+// immediately instead of only on the next incidental refresh.
+(function setupIconAutoRefresh() {
+  const observer = new MutationObserver(() => refreshIcons());
+  observer.observe(document.body, { childList: true, subtree: true });
+  if (window.lucide) {
+    refreshIcons(); // script already finished loading before this ran
+  } else {
+    const script = document.getElementById("lucideScript");
+    if (script) script.addEventListener("load", refreshIcons);
+  }
+})();
+
 let toastTimer = null;
 function toast(msg) {
   const t = document.getElementById("toast");
@@ -60,11 +82,44 @@ async function fileToBase64(file) {
   });
 }
 
+const BN_DIGITS = ["০", "১", "২", "৩", "৪", "৫", "৬", "৭", "৮", "৯"];
+function toBnDigits(n) {
+  return String(n).replace(/[0-9]/g, (d) => BN_DIGITS[+d]);
+}
+
+// Site-wide date format: DD/MM/YYYY (with Bengali digits).
 function bnDate(iso) {
   if (!iso) return "";
   const d = new Date(iso.length === 10 ? iso + "T00:00:00" : iso.replace(" ", "T"));
-  const months = ["জানুয়ারি","ফেব্রুয়ারি","মার্চ","এপ্রিল","মে","জুন","জুলাই","আগষ্ট","সেপ্টেম্বর","অক্টোবর","নভেম্বর","ডিসেম্বর"];
-  return `${d.getDate()} ${months[d.getMonth()]}, ${d.getFullYear()}`;
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return toBnDigits(`${dd}/${mm}/${yyyy}`);
+}
+
+// Bengali duration formatter for countdowns, e.g.:
+//   "১৭ ঘন্টা ২৯ মিনিট ১৩ সেকেন্ড"          (under a day)
+//   "২ মাস ১২ দিন ২৩ ঘন্টা"                  (a month or more - no minutes/seconds)
+//   "৫ দিন ৩ ঘন্টা"                          (a day or more but under a month)
+function bnDuration(fromMs, toMs) {
+  let diffMs = Math.max(0, toMs - fromMs);
+  const totalMinutes = Math.floor(diffMs / 60000);
+  const months = Math.floor(totalMinutes / (30 * 24 * 60));
+  let rem = totalMinutes - months * 30 * 24 * 60;
+  const days = Math.floor(rem / (24 * 60));
+  rem -= days * 24 * 60;
+  const hours = Math.floor(rem / 60);
+  rem -= hours * 60;
+  const minutes = rem;
+  const seconds = Math.floor((diffMs % 60000) / 1000);
+
+  if (months > 0) {
+    return `${toBnDigits(months)} মাস ${toBnDigits(days)} দিন ${toBnDigits(hours)} ঘন্টা`;
+  }
+  if (days > 0) {
+    return `${toBnDigits(days)} দিন ${toBnDigits(hours)} ঘন্টা`;
+  }
+  return `${toBnDigits(hours)} ঘন্টা ${toBnDigits(minutes)} মিনিট ${toBnDigits(seconds)} সেকেন্ড`;
 }
 
 function setLoading(container) {
@@ -189,4 +244,28 @@ async function locationOptions(selectEl, selectedId) {
       });
     });
   } catch { /* non-fatal */ }
+}
+
+// Renders a name/slug as a link to its public profile when a slug exists,
+// otherwise as plain text with the given fallback label (e.g. "একজন ডোনার").
+function personLink(label, slug) {
+  if (slug) return h("a", { href: "/" + slug, "data-link": "" }, label);
+  return h("span", {}, label);
+}
+
+// today's date as YYYY-MM-DD in the local timezone, for date-input min= attrs
+function todayIsoDate() {
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+// Picks a stable-per-profile-picture-slot random default avatar from the
+// admin-configured list when the person has no uploaded picture, falling
+// back to the site logo if none are configured.
+function pickDefaultAvatar() {
+  const avatars = (APP.settings && APP.settings.defaultAvatars) || [];
+  if (!avatars.length) return "/img/logo.png";
+  return avatars[Math.floor(Math.random() * avatars.length)];
 }

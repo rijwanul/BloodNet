@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS users (
   disabled               INTEGER NOT NULL DEFAULT 0,
   deleted                INTEGER NOT NULL DEFAULT 0,
   donorbd_slug_registered INTEGER NOT NULL DEFAULT 0,       -- whether current username_slug has a live donor.bd entry
+  pending_donation_prompt INTEGER NOT NULL DEFAULT 0,       -- 1 = donor said "can_donate" on a call and hasn't logged/declined yet
+  pending_donation_prompt_at TEXT DEFAULT NULL,              -- when the prompt was raised, for the 48h SMS reminder
+  donation_reminder_sent INTEGER NOT NULL DEFAULT 0,        -- guards against sending the 48h reminder more than once per prompt
+  last_eligibility_change_note TEXT DEFAULT NULL,            -- e.g. "আপনাকে 01892****23 কল করেছিলো। ষ্ট্যাটাস: ..." shown on /quick
   created_at             TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -83,6 +87,22 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 CREATE INDEX IF NOT EXISTS idx_calls_requester ON calls(requester_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_calls_donor ON calls(donor_id, created_at DESC);
+
+-- ============================================================
+-- SEEK EXCLUSIONS
+-- Once a donor has been served to a requester (and the requester moved on
+-- - unresponsive, declined, etc), that donor should not be served to the
+-- SAME requester again within the same seeking session. Rows are pruned by
+-- the app once they age past the rolling call-limit window so a fresh
+-- session naturally starts clean.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS seek_exclusions (
+  requester_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  donor_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (requester_id, donor_id)
+);
+CREATE INDEX IF NOT EXISTS idx_seek_exclusions_requester ON seek_exclusions(requester_id, created_at);
 
 -- ============================================================
 -- LOCATIONS (admin-managed, up to 2 levels deep)
@@ -161,7 +181,16 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('self_deletion_enabled', '1'),
   ('sms_account_created_self', '{siteTitle} এ জয়েন করার জন্য ধন্যবাদ!'),
   ('sms_account_created_import', 'আপনার একটি একাউন্ট ইম্পোর্ট করা হয়েছে। পাস: {password}'),
-  ('sms_otp', 'আপনার OTP: {otp}');
+  ('sms_otp', 'আপনার OTP: {otp}'),
+  ('call_status_timer_seconds', '20'),
+  ('show_seek_option', '1'),
+  ('show_join_option', '1'),
+  ('profile_share_base_url', ''),
+  ('default_avatars_json', '[]'),
+  ('sms_enabled_eligibility_change_by_call', '1'),
+  ('sms_eligibility_change_by_call', 'আপনার এলিজিবিলিটি একটি কলের কারণে পরিবর্তন হয়েছে। ষ্ট্যাটাস: {status}'),
+  ('sms_enabled_donation_reminder', '1'),
+  ('sms_donation_reminder', '({siteTitle}) সম্প্রতি রক্তদান করেছেন? এন্ট্রি বা ষ্ট্যাটাস আপডেট করে নিন!');
 
 INSERT OR IGNORE INTO external_sources (name, url, sort_order) VALUES
   ('BloodBag', 'https://www.bloodbag.app/new-blood-request', 1);

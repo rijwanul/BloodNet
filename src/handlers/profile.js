@@ -4,7 +4,26 @@ import { getCurrentUser, clearSessionCookie } from "../lib/authctx.js";
 import { logActivity } from "../lib/activity.js";
 import { donorbdCheckAvailability, donorbdNewEntry, donorbdDeleteEntry } from "../lib/donorbd.js";
 import { uploadToImgbb } from "../lib/imgbb.js";
+import { publicCallHistoryFor } from "./calls.js";
 
+// Each visibility-controllable field has its own allowed value set:
+//  - "patients_only" means "visible only while this donor is being actively
+//    shown to a requester inside the /seek flow" - NOT "any logged-in user
+//    browsing the public profile page". The general public profile page
+//    never reveals patients_only fields to anyone but the owner.
+//  - "login" (লগইন করা ইউজার) means visible to any logged-in viewer on the
+//    general public profile page.
+const FIELD_VISIBILITY_OPTIONS = {
+  mobile: ["public", "login", "patients_only", "hidden"],
+  address_summary: ["public", "login", "patients_only", "hidden"],
+  location: ["public", "login", "patients_only", "hidden"],
+  last_donation_date: ["public", "login", "patients_only", "hidden"],
+  total_donations: ["public", "login", "patients_only", "hidden"],
+  donation_history_tab: ["public", "login", "hidden"],
+  call_history_tab: ["public", "login", "hidden"],
+  eligibility_status: ["public", "login", "hidden"],
+  note: ["public", "login"], // never hidden - donor can just save an empty note instead
+};
 const DEFAULT_VISIBILITY = {
   mobile: "patients_only",
   address_summary: "patients_only",
@@ -13,9 +32,10 @@ const DEFAULT_VISIBILITY = {
   total_donations: "public",
   donation_history_tab: "public",
   call_history_tab: "public",
+  eligibility_status: "public",
+  note: "public",
 };
-const ALWAYS_PUBLIC = ["name", "username", "note"];
-const VISIBILITY_VALUES = ["public", "patients_only", "hidden"];
+const ALWAYS_PUBLIC = ["name", "username"];
 
 function safeJson(s, fallback = {}) {
   try {
@@ -58,6 +78,9 @@ export async function handleProfileMe(request, env) {
       totalCallsReceived: user.total_calls_received,
       donorsManagedCount: user.donors_managed_count,
       createdAt: user.created_at,
+      eligibilityStatus: user.eligibility_status,
+      eligibilitySnoozeUntil: user.eligibility_snooze_until,
+      eligibilitySnoozeReason: user.eligibility_snooze_reason,
       visibility: { ...DEFAULT_VISIBILITY, ...safeJson(user.visibility_json) },
     },
   });
@@ -93,7 +116,7 @@ export async function handleProfileEdit(request, env) {
   }
   if (typeof body.note === "string") {
     fields.push("donor_note = ?");
-    values.push(body.note.slice(0, 300));
+    values.push(body.note.slice(0, 300)); // empty string is allowed - donor can save a blank note
   }
 
   // Profile picture upload (base64 image data sent from client)
@@ -196,6 +219,9 @@ export async function handleUsernameClaim(request, env) {
     if (remote.configured && !remote.available) return err("এই ইউজারনেইম donor.bd তে উপলব্ধ নয়");
   }
 
+  // Admin can point the shared/short link at a different base (e.g. their
+  // own donor.bd-style short domain) purely for display; the donor.bd
+  // registry entry itself always targets this app's real origin.
   const baseUrl = new URL(request.url).origin;
   if (user.username_slug) {
     await donorbdDeleteEntry(settings, user.username_slug.toLowerCase()).catch(() => {});
@@ -221,7 +247,8 @@ export async function handleProfileVisibility(request, env) {
   const current = { ...DEFAULT_VISIBILITY, ...safeJson(user.visibility_json) };
   for (const [k, v] of Object.entries(incoming)) {
     if (ALWAYS_PUBLIC.includes(k)) continue;
-    if (VISIBILITY_VALUES.includes(v)) current[k] = v;
+    const allowed = FIELD_VISIBILITY_OPTIONS[k];
+    if (allowed && allowed.includes(v)) current[k] = v;
   }
   await env.DB.prepare("UPDATE users SET visibility_json = ?, updated_at = ? WHERE id = ?").bind(JSON.stringify(current), nowIso(), user.id).run();
   return ok({ visibility: current });
@@ -237,38 +264,51 @@ export async function handleDonationsList(request, env) {
   return ok({ donations: results, extraCount: user.extra_donation_count || 0 });
 }
 
+// Single entry point for adding a donation record, covering both the
+// normal dated case and the "মনে নেই" (don't remember) case:
+//  - dateUnknown false -> a normal dated entry (hospitalName optional,
+//    independently markable as unknown/blank).
+//  - dateUnknown true, moreUnknownExist false -> this one entry folds into
+//    the undated "extra" bucket as +1.
+//  - dateUnknown true, moreUnknownExist true -> donor provides the GRAND
+//    TOTAL of undated donations (including this one), replacing the
+//    extra-count bucket outright rather than adding to it.
 export async function handleDonationsAdd(request, env) {
   const user = await getCurrentUser(request, env);
   if (!user) return err("লগইন প্রয়োজন", 401);
   const body = await readJson(request);
-  const date = body.date;
-  const hospitalName = body.hospitalName || null;
-  const countAsExtra = !!body.countAsAdditionalExtra; // default false per spec
-  if (!date) return err("তারিখ দিন");
+  const dateUnknown = !!body.dateUnknown;
+  const hospitalUnknown = !!body.hospitalUnknown;
 
-  await env.DB
-    .prepare("INSERT INTO donations (user_id, hospital_name, donation_date, created_at) VALUES (?, ?, ?, ?)")
-    .bind(user.id, hospitalName, date, nowIso())
-    .run();
-  if (countAsExtra) {
-    await env.DB.prepare("UPDATE users SET extra_donation_count = extra_donation_count + 1 WHERE id = ?").bind(user.id).run();
+  if (!dateUnknown) {
+    const date = body.date;
+    if (!date) return err("তারিখ দিন, অথবা 'মনে নেই' নির্বাচন করুন");
+    const hospitalName = hospitalUnknown ? null : (body.hospitalName || null);
+    await env.DB
+      .prepare("INSERT INTO donations (user_id, hospital_name, donation_date, created_at) VALUES (?, ?, ?, ?)")
+      .bind(user.id, hospitalName, date, nowIso())
+      .run();
+    await env.DB
+      .prepare("UPDATE users SET last_donation_date = ?, updated_at = ? WHERE id = ? AND (last_donation_date IS NULL OR last_donation_date < ?)")
+      .bind(date, nowIso(), user.id, date)
+      .run();
+    await logActivity(env.DB, { actorUser: user, category: "donation", actionText: `পূর্বের রক্তদানের তথ্য যোগ করেছেন (${date})` });
+    return ok({ added: true });
   }
-  await env.DB.prepare("UPDATE users SET last_donation_date = ?, updated_at = ? WHERE id = ? AND (last_donation_date IS NULL OR last_donation_date < ?)")
-    .bind(date, nowIso(), user.id, date)
-    .run();
-  await logActivity(env.DB, { actorUser: user, category: "donation", actionText: `পূর্বের রক্তদানের তথ্য যোগ করেছেন (${date})` });
-  return ok({ added: true });
-}
 
-export async function handleDonationsBulkAdd(request, env) {
-  const user = await getCurrentUser(request, env);
-  if (!user) return err("লগইন প্রয়োজন", 401);
-  const body = await readJson(request);
-  const count = parseInt(body.count, 10);
-  if (!Number.isFinite(count) || count < 0 || count > 500) return err("সঠিক সংখ্যা দিন");
-  await env.DB.prepare("UPDATE users SET extra_donation_count = ?, updated_at = ? WHERE id = ?").bind(count, nowIso(), user.id).run();
-  await logActivity(env.DB, { actorUser: user, category: "donation", actionText: `অতিরিক্ত রক্তদানের সংখ্যা সেট করেছেন (${count})` });
-  return ok({ extraCount: count });
+  // dateUnknown = true
+  if (body.moreUnknownExist) {
+    const total = parseInt(body.totalUnknownCount, 10);
+    if (!Number.isFinite(total) || total < 1 || total > 500) return err("সঠিক সংখ্যা দিন (কমপক্ষে ১)");
+    await env.DB.prepare("UPDATE users SET extra_donation_count = ?, updated_at = ? WHERE id = ?").bind(total, nowIso(), user.id).run();
+    await logActivity(env.DB, { actorUser: user, category: "donation", actionText: `মনে না থাকা রক্তদানের মোট সংখ্যা সেট করেছেন (${total})` });
+    return ok({ extraCount: total });
+  }
+
+  await env.DB.prepare("UPDATE users SET extra_donation_count = extra_donation_count + 1, updated_at = ? WHERE id = ?").bind(nowIso(), user.id).run();
+  await logActivity(env.DB, { actorUser: user, category: "donation", actionText: "মনে না থাকা একটি রক্তদান যোগ করেছেন" });
+  const row = await env.DB.prepare("SELECT extra_donation_count FROM users WHERE id = ?").bind(user.id).first();
+  return ok({ extraCount: row.extra_donation_count });
 }
 
 export async function handleProfileDelete(request, env) {
@@ -299,6 +339,8 @@ export async function handleProfileDelete(request, env) {
   return ok({ deleted: true }, { headers: { "Set-Cookie": clearSessionCookie(request) } });
 }
 
+const ELIGIBILITY_LABELS_BN = { on: "চালু আছে", snoozed: "সাময়িক বন্ধ", off: "বন্ধ" };
+
 export async function handlePublicProfile(request, env, slug) {
   const user = await env.DB.prepare("SELECT * FROM users WHERE LOWER(username_slug) = LOWER(?) AND deleted = 0").bind(slug).first();
   if (!user) return err("প্রোফাইল পাওয়া যায়নি", 404);
@@ -309,23 +351,43 @@ export async function handlePublicProfile(request, env, slug) {
   const location = user.location_id ? await env.DB.prepare("SELECT name FROM locations WHERE id = ?").bind(user.location_id).first() : null;
 
   const isSelf = viewer && viewer.id === user.id;
-  const show = (field) => isSelf || vis[field] === "public" || (vis[field] === "patients_only" && viewer);
+  // "patients_only" is intentionally excluded here - it only applies inside
+  // the active /seek flow, never on the general public profile page.
+  const show = (field) => isSelf || vis[field] === "public" || (vis[field] === "login" && !!viewer);
+
+  let donations = [];
+  if (show("donation_history_tab")) {
+    const { results } = await env.DB.prepare("SELECT id, hospital_name, donation_date FROM donations WHERE user_id = ? ORDER BY donation_date DESC").bind(user.id).all();
+    donations = results;
+  }
+  let calls = [];
+  if (show("call_history_tab")) {
+    calls = await publicCallHistoryFor(env.DB, user.id);
+  }
 
   return ok({
     profile: {
+      id: user.id,
       name: user.name,
       username: user.username_display,
       profilePicUrl: user.profile_pic_url,
       isDonor: !!user.is_donor,
       bloodGroup: user.blood_group,
-      note: user.donor_note,
-      totalDonations,
+      note: show("note") ? user.donor_note : null,
+      totalDonations: show("total_donations") ? totalDonations : null,
       lastDonationDate: show("last_donation_date") ? user.last_donation_date : null,
       addressSummary: show("address_summary") ? user.address_summary : null,
       locationName: show("location") && location ? location.name : null,
       mobile: show("mobile") ? user.mobile : null,
-      donationHistoryVisible: vis.donation_history_tab !== "hidden" || isSelf,
-      callHistoryVisible: vis.call_history_tab !== "hidden" || isSelf,
+      eligibilityStatus: show("eligibility_status") ? user.eligibility_status : null,
+      eligibilitySnoozeUntil: show("eligibility_status") ? user.eligibility_snooze_until : null,
+      eligibilityLabel: show("eligibility_status") ? ELIGIBILITY_LABELS_BN[user.eligibility_status] || user.eligibility_status : null,
+      donationHistoryVisible: show("donation_history_tab"),
+      callHistoryVisible: show("call_history_tab"),
+      donations,
+      calls,
+      extraDonationCount: show("total_donations") ? (user.extra_donation_count || 0) : null,
+      explicitDonationCount: show("total_donations") ? explicit : null,
       joinedAt: user.created_at,
       totalCallsMade: user.total_calls_made,
       totalCallsReceived: user.total_calls_received,
@@ -333,3 +395,8 @@ export async function handlePublicProfile(request, env, slug) {
     },
   });
 }
+
+// Shared by the public profile's call-history tab - deliberately makes NO
+// reference to "আপনি" (you) since this is rendered for third-party viewers
+// too; the raw status is shown unmodified. Implementation lives in calls.js.
+export { publicCallHistoryFor } from "./calls.js";

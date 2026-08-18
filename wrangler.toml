@@ -18,6 +18,12 @@ database_id = "c72c02aa-087c-4550-aef2-02aee345e007"
 binding = "KV"
 id = "05e5391a73504cd38b96caf6c7627179"
 
+# Runs the 48h "did you actually donate?" reminder sweep (see
+# src/lib/scheduled.js). Hourly is frequent enough that the 48h check never
+# drifts by more than an hour.
+[triggers]
+crons = ["0 * * * *"]
+
 # Secrets (set via: wrangler secret put <NAME>)
 #   ROOT_ADMIN_MOBILE      - root admin's 11-digit BD mobile number (login identifier)
 #   ROOT_ADMIN_PASSWORD    - root admin's initial password (must be changed on first login)
