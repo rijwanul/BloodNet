@@ -1,0 +1,4 @@
+*.md
+cloudflare-ignore/
+.git/
+.gitignore

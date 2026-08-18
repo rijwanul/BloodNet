@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>BloodNet v2 (bn2) - Deployment Instructions</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #201a18; }
+  h1, h2 { color: #7d1424; }
+  pre { background: #f3ede9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+  code { background: #f3ede9; padding: 2px 6px; border-radius: 4px; }
+  .step { border-left: 3px solid #b21e33; padding-left: 16px; margin: 24px 0; }
+  button.copy { font-size: 0.75rem; padding: 4px 10px; margin-left: 8px; cursor: pointer; }
+  .box { background: #fff; border: 1px solid #e7dfda; border-radius: 8px; padding: 16px; margin: 16px 0; }
+  input, textarea { width: 100%; padding: 8px; font-family: monospace; box-sizing: border-box; }
+  .result { background: #201a18; color: #d4f7e6; padding: 10px 12px; border-radius: 6px; font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; margin-top: 8px; min-height: 20px; }
+</style>
+</head>
+<body>
+<h1>BloodNet v2 (worker: bn2) - Deployment Guide</h1>
+<p>This file is for setup only. It is excluded from actual Cloudflare deployment via <code>.cloudflareignore</code> (all <code>*.md</code> files are excluded too, so <code>README.md</code> never gets deployed either).</p>
+
+<div class="step">
+  <h2>1. Install Wrangler and log in</h2>
+  <pre><code>npm install -g wrangler
+wrangler login</code></pre>
+  <p>If you manage multiple Cloudflare accounts with named Wrangler profiles, activate one before proceeding:</p>
+  <pre><code>wrangler auth activate &lt;profile-name&gt;</code></pre>
+</div>
+
+<div class="step">
+  <h2>2. Create the D1 database</h2>
+  <pre><code>wrangler d1 create bnetv2_db</code></pre>
+  <p>Copy the returned <code>database_id</code> into <code>wrangler.toml</code> under <code>[[d1_databases]]</code>.</p>
+</div>
+
+<div class="step">
+  <h2>3. Apply the schema</h2>
+  <pre><code>wrangler d1 execute bnetv2_db --remote --file=./schema.sql</code></pre>
+  <p>(Use <code>--local</code> instead of <code>--remote</code> while testing with <code>wrangler dev</code>.)</p>
+</div>
+
+<div class="step">
+  <h2>4. Create the KV namespace</h2>
+  <pre><code>wrangler kv namespace create BN2_KV</code></pre>
+  <p>Copy the returned <code>id</code> into <code>wrangler.toml</code> under <code>[[kv_namespaces]]</code>.</p>
+</div>
+
+<div class="step">
+  <h2>5. Set secrets</h2>
+  <pre><code>wrangler secret put ROOT_ADMIN_MOBILE
+wrangler secret put ROOT_ADMIN_PASSWORD
+wrangler secret put JWT_SECRET</code></pre>
+  <p><code>ROOT_ADMIN_MOBILE</code> is an 11-digit Bangladeshi mobile number (e.g. <code>01712345678</code>) - this becomes the root admin's login identifier. <code>JWT_SECRET</code> should be a long random string, e.g. generate one with:</p>
+  <pre><code>openssl rand -hex 32</code></pre>
+</div>
+
+<div class="step">
+  <h2>6. Deploy</h2>
+  <pre><code>wrangler deploy</code></pre>
+  <p>The worker is named <code>bn2</code> in <code>wrangler.toml</code>. On first successful login with the root admin's mobile number, the root admin account is created automatically and will be forced to change its password immediately.</p>
+</div>
+
+<div class="step">
+  <h2>7. Configure the rest from the Admin Panel</h2>
+  <p>Log in as the root admin and visit <code>/admin/site-apis</code> to add your ImgBB, DonorBD, and GreenSMS-compatible SMS gateway keys, and <code>/admin/site-settings</code> to set branding (logo, favicon, social preview, theme color, welcome text).</p>
+</div>
+
+<hr>
+<h2>Interactive API tester</h2>
+<p>Use these forms to sanity-check your deployment once it is live. Replace <code>YOUR-WORKER-URL</code> below.</p>
+
+<div class="box">
+  <label>Worker base URL</label>
+  <input id="baseUrl" value="https://bn2.YOUR-SUBDOMAIN.workers.dev">
+</div>
+
+<div class="box">
+  <h3>Check public settings</h3>
+  <button onclick="testGet('/api/settings/public')">GET /api/settings/public</button>
+  <div id="out1" class="result"></div>
+</div>
+
+<div class="box">
+  <h3>Check mobile availability</h3>
+  <input id="mobileCheck" placeholder="01XXXXXXXXX">
+  <button onclick="testGet('/api/auth/check-mobile?mobile=' + document.getElementById('mobileCheck').value, 'out2')">GET /api/auth/check-mobile</button>
+  <div id="out2" class="result"></div>
+</div>
+
+<div class="box">
+  <h3>Eligible donor count</h3>
+  <select id="bgSelect">
+    <option>A+</option><option>A-</option><option>B+</option><option>B-</option>
+    <option>O+</option><option>O-</option><option>AB+</option><option>AB-</option>
+  </select>
+  <button onclick="testGet('/api/seek/count?bloodGroup=' + document.getElementById('bgSelect').value, 'out3')">GET /api/seek/count</button>
+  <div id="out3" class="result"></div>
+</div>
+
+<script>
+async function testGet(path, outId) {
+  outId = outId || 'out1';
+  const base = document.getElementById('baseUrl').value.replace(/\/$/, '');
+  const out = document.getElementById(outId);
+  out.textContent = 'Loading...';
+  try {
+    const res = await fetch(base + path);
+    const data = await res.json();
+    out.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    out.textContent = 'Error: ' + e.message;
+  }
+}
+</script>
+</body>
+</html>

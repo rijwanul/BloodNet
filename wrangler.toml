@@ -1,0 +1,28 @@
+name = "bn2"
+main = "src/worker.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Static frontend (plain HTML/CSS/JS, no build step)
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bnetv2_db"
+database_id = "c72c02aa-087c-4550-aef2-02aee345e007"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "05e5391a73504cd38b96caf6c7627179"
+
+# Secrets (set via: wrangler secret put <NAME>)
+#   ROOT_ADMIN_MOBILE      - root admin's 11-digit BD mobile number (login identifier)
+#   ROOT_ADMIN_PASSWORD    - root admin's initial password (must be changed on first login)
+#   JWT_SECRET             - random long string used to sign session tokens
+
+[vars]
+# Non-secret build-time constants (safe defaults, can be overridden per environment)
+ENVIRONMENT = "production"
