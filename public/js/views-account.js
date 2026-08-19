@@ -16,7 +16,12 @@ ViewsAccount.quick = async function (view) {
     : ["toggle", "note", "donation", "mobile", "location"];
 
   if (lastEligibilityChangeNote) {
-    view.appendChild(h("div", { class: "banner", style: "background:var(--surface-2);color:var(--ink-soft)" }, lastEligibilityChangeNote));
+    const banner = h("div", { class: "banner banner--dismissible", style: "background:var(--surface-2);color:var(--ink-soft)" }, [
+      h("span", {}, lastEligibilityChangeNote),
+    ]);
+    const dismissBtn = h("button", { type: "button", class: "banner__dismiss", "aria-label": "বন্ধ করুন", onclick: () => banner.remove() }, icon("x", "small"));
+    banner.appendChild(dismissBtn);
+    view.appendChild(banner);
   }
 
   for (const key of order) {
@@ -181,7 +186,14 @@ function renderCountdown(untilIso, reason) {
   const label = h("span", {});
   wrap.appendChild(h("div", {}, reason ? `কারণ: ${reason}` : ""));
   wrap.appendChild(label);
-  const target = new Date(untilIso.replace(" ", "T")).getTime();
+  // untilIso is stored as a UTC timestamp with no timezone marker (e.g.
+  // "2026-08-19 14:30:00" from .toISOString().slice(0,19)). Without an
+  // explicit "Z", the Date constructor parses a plain "T"-joined string as
+  // LOCAL time instead of UTC - on a UTC+6 browser (Bangladesh) that skews
+  // the countdown target by 6 hours, which is exactly why the ২ ঘন্টা/৬
+  // ঘন্টা snooze options appeared to expire almost immediately instead of
+  // waiting the stated duration. Appending "Z" tells it this is UTC.
+  const target = new Date(untilIso.replace(" ", "T") + "Z").getTime();
   let interval = null;
   const tick = () => {
     const diff = target - Date.now();
@@ -302,8 +314,8 @@ function renderInfoTab(body, profile) {
     const urlRow = h("div", { class: "row" });
     urlRow.appendChild(h("b", {}, "প্রোফাইল URL: "));
     urlRow.appendChild(h("a", { href: shareUrl, style: "flex:1" }, shareUrl));
-    const copyBtn = h("button", { class: "btn-ghost", title: "কপি করুন", onclick: () => { navigator.clipboard?.writeText(shareUrl); toast("লিংক কপি হয়েছে"); } }, icon("copy", "small"));
-    const editBtn = h("button", { class: "btn-ghost", title: "ইউজারনেইম পরিবর্তন করুন", onclick: () => toggleUsernameEditor(card, profile) }, icon("pencil", "small"));
+    const copyBtn = h("button", { type: "button", class: "btn-icon", title: "কপি করুন", onclick: () => { navigator.clipboard?.writeText(shareUrl); toast("লিংক কপি হয়েছে"); } }, icon("copy", "small"));
+    const editBtn = h("button", { type: "button", class: "btn-icon", title: "ইউজারনেইম পরিবর্তন করুন", onclick: () => toggleUsernameEditor(card, profile) }, icon("pencil", "small"));
     urlRow.appendChild(copyBtn);
     urlRow.appendChild(editBtn);
     card.appendChild(urlRow);
@@ -391,39 +403,54 @@ async function renderDonationsTab(body, profile) {
   const addCard = h("div", { class: "card stack" });
   addCard.appendChild(h("h3", {}, "ডোনেশন তথ্য সংযোজন"));
 
+  // Field/checkbox order per spec: তারিখ row (with মনে নেই to its right),
+  // then হাসপাতালের নাম row (with its own মনে নেই to the right), then - only
+  // once তারিখ is marked মনে নেই - the "আরো রয়েছে" follow-up beneath তারিখ,
+  // which itself hides হাসপাতালের নাম while checked.
   const dateField = h("input", { type: "date", max: todayIsoDate() });
-  const dateUnknownCb = h("input", { type: "checkbox" });
-  addCard.appendChild(h("div", { class: "field" }, [h("label", {}, "তারিখ"), dateField]));
-  addCard.appendChild(h("div", { class: "checkbox-row" }, [dateUnknownCb, h("span", { class: "lbl" }, "মনে নেই")]));
-
-  const hospField = h("input", { type: "text", placeholder: "হাসপাতালের নাম" });
-  const hospUnknownCb = h("input", { type: "checkbox" });
-  addCard.appendChild(h("div", { class: "field" }, [h("label", {}, "হাসপাতালের নাম"), hospField]));
-  addCard.appendChild(h("div", { class: "checkbox-row" }, [hospUnknownCb, h("span", { class: "lbl" }, "মনে নেই")]));
+  const dateUnknownCb = h("input", { type: "checkbox", id: "donDateUnknownCb" });
+  addCard.appendChild(h("div", { class: "field-row-with-checkbox" }, [
+    h("div", { class: "field", style: "flex:1" }, [h("label", {}, "তারিখ"), dateField]),
+    h("label", { class: "checkbox-row checkbox-row--inline", for: "donDateUnknownCb" }, [dateUnknownCb, h("span", { class: "lbl" }, "মনে নেই")]),
+  ]));
 
   const moreUnknownWrap = h("div", { style: "display:none" });
-  const moreUnknownCb = h("input", { type: "checkbox" });
-  moreUnknownWrap.appendChild(h("div", { class: "checkbox-row" }, [moreUnknownCb, h("span", { class: "lbl" }, "এমন মনে না থাকা ডোনেশন আরো রয়েছে")]));
+  const moreUnknownCb = h("input", { type: "checkbox", id: "donMoreUnknownCb" });
+  moreUnknownWrap.appendChild(h("label", { class: "checkbox-row", for: "donMoreUnknownCb" }, [moreUnknownCb, h("span", { class: "lbl" }, "এমন মনে না থাকা ডোনেশন আরো রয়েছে")]));
   const totalUnknownWrap = h("div", { style: "display:none" });
   const totalUnknownField = h("input", { type: "number", min: "1" });
   totalUnknownWrap.appendChild(h("div", { class: "field" }, [h("label", {}, "এমন মনে না থাকা ডোনেশন এর সংখ্যা কত? (এটিসহ সর্বমোট):"), totalUnknownField]));
   moreUnknownWrap.appendChild(totalUnknownWrap);
   addCard.appendChild(moreUnknownWrap);
 
+  const hospField = h("input", { type: "text", placeholder: "হাসপাতালের নাম" });
+  const hospUnknownCb = h("input", { type: "checkbox", id: "donHospUnknownCb" });
+  const hospRow = h("div", { class: "field-row-with-checkbox" }, [
+    h("div", { class: "field", style: "flex:1" }, [h("label", {}, "হাসপাতালের নাম"), hospField]),
+    h("label", { class: "checkbox-row checkbox-row--inline", for: "donHospUnknownCb" }, [hospUnknownCb, h("span", { class: "lbl" }, "মনে নেই")]),
+  ]);
+  addCard.appendChild(hospRow);
+
   dateField.disabled = false;
   const syncDateUnknown = () => {
     dateField.disabled = dateUnknownCb.checked;
     if (dateUnknownCb.checked) dateField.value = "";
     moreUnknownWrap.style.display = dateUnknownCb.checked ? "block" : "none";
-    if (!dateUnknownCb.checked) { moreUnknownCb.checked = false; totalUnknownWrap.style.display = "none"; }
+    if (!dateUnknownCb.checked) { moreUnknownCb.checked = false; totalUnknownWrap.style.display = "none"; hospRow.style.display = ""; }
   };
   dateUnknownCb.onchange = syncDateUnknown;
   hospField.disabled = false;
   hospUnknownCb.onchange = () => { hospField.disabled = hospUnknownCb.checked; if (hospUnknownCb.checked) hospField.value = ""; };
-  moreUnknownCb.onchange = () => { totalUnknownWrap.style.display = moreUnknownCb.checked ? "block" : "none"; };
+  // "আরো রয়েছে" checked -> হাসপাতালের নাম row (which has no meaning once the
+  // donor is describing a bucket of many undated donations) is hidden entirely.
+  moreUnknownCb.onchange = () => {
+    totalUnknownWrap.style.display = moreUnknownCb.checked ? "block" : "none";
+    hospRow.style.display = moreUnknownCb.checked ? "none" : "";
+  };
 
   const addBtn = h("button", { class: "btn btn-accent" }, "যোগ করুন");
   addCard.appendChild(addBtn);
+  enterSubmits([dateField, hospField, totalUnknownField], addBtn);
   addBtn.onclick = async () => {
     if (!dateUnknownCb.checked && !dateField.value) return toast("তারিখ দিন, অথবা 'মনে নেই' নির্বাচন করুন");
     if (dateUnknownCb.checked && moreUnknownCb.checked && !totalUnknownField.value) return toast("সংখ্যা দিন");
@@ -460,11 +487,7 @@ async function renderProfileCallsTab(body, isSelf) {
   const card = h("div", { class: "card stack" });
   if (!received.length && !made.length) card.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
   [...received, ...made].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)).forEach((c) => {
-    const isMade = "donorLabel" in c;
-    const label = isMade ? c.donorLabel : c.requesterLabel;
-    const slug = isMade ? c.donorSlug : c.requesterSlug;
-    const rest = c.text.replace(label, "").trim();
-    card.appendChild(h("div", { class: "list-item" }, h("span", {}, [personLink(label, slug), " " + rest])));
+    card.appendChild(h("div", { class: "list-item" }, h("span", {}, [personLink(c.personLabel, c.slug), " " + c.suffixText])));
   });
   body.appendChild(card);
 }
@@ -628,14 +651,20 @@ ViewsAccount.settings = async function (view) {
   pwCard.appendChild(h("h3", {}, "পাসওয়ার্ড পরিবর্তন"));
   const oldPwWrap = passwordField("বর্তমান পাসওয়ার্ড");
   const newPwWrap = passwordField("নতুন পাসওয়ার্ড");
+  const confirmPwWrap = passwordField("নতুন পাসওয়ার্ড আবার লিখুন");
   const oldPw = oldPwWrap.querySelector("input");
   const newPw = newPwWrap.querySelector("input");
+  const confirmPw = confirmPwWrap.querySelector("input");
+  const pwErr = h("div", { class: "field-error" });
   pwCard.appendChild(h("div", { class: "field" }, [h("label", {}, "বর্তমান পাসওয়ার্ড"), oldPwWrap]));
   pwCard.appendChild(h("div", { class: "field" }, [h("label", {}, "নতুন পাসওয়ার্ড"), newPwWrap]));
+  pwCard.appendChild(h("div", { class: "field" }, [h("label", {}, "নতুন পাসওয়ার্ড আবার লিখুন"), confirmPwWrap, pwErr]));
   const pwBtn = h("button", { class: "btn btn-primary" }, "পরিবর্তন করুন");
   pwCard.appendChild(pwBtn);
-  enterSubmits([oldPw, newPw], pwBtn);
+  enterSubmits([oldPw, newPw, confirmPw], pwBtn);
   pwBtn.onclick = async () => {
+    pwErr.textContent = "";
+    if (newPw.value !== confirmPw.value) { pwErr.textContent = "পাসওয়ার্ড দুটি মিলছে না"; return; }
     try {
       await API.post("/api/auth/change-password", { oldPassword: oldPw.value, newPassword: newPw.value });
       toast("পাসওয়ার্ড পরিবর্তন হয়েছে");

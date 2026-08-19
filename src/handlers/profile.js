@@ -216,7 +216,7 @@ export async function handleUsernameClaim(request, env) {
   const checkRequired = settingBool(settings, "donorbd_check_before_claim", true);
   if (checkRequired) {
     const remote = await donorbdCheckAvailability(settings, slug.toLowerCase());
-    if (remote.configured && !remote.available) return err("এই ইউজারনেইম donor.bd তে উপলব্ধ নয়");
+    if (remote.configured && !remote.available) return err("এই ইউজারনেইমটি ক্লেইম করা যাচ্ছে না");
   }
 
   // Admin can point the shared/short link at a different base (e.g. their

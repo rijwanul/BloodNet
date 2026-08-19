@@ -67,7 +67,12 @@ export async function handleDonorEligibility(request, env) {
     } else if (snoozeType === "until_date") {
       if (!snoozeDate) return err("তারিখ নির্বাচন করুন");
       reasonLabel = "তারিখ পর্যন্ত স্থগিত";
-      snoozeUntil = `${snoozeDate} 00:00:00`;
+      // Stored as a UTC timestamp (matching every other snoozeUntil value
+      // and how wakeSnoozedDonors compares against SQLite's datetime('now'),
+      // which is always UTC) rather than a timezone-naive local midnight -
+      // otherwise this drifts by the server/browser's UTC offset, the same
+      // class of bug that affected the ২ ঘন্টা/৬ ঘন্টা presets.
+      snoozeUntil = new Date(`${snoozeDate}T00:00:00`).toISOString().replace("T", " ").slice(0, 19);
       await env.DB
         .prepare("UPDATE users SET eligibility_status = 'snoozed', eligibility_snooze_until = ?, eligibility_snooze_reason = ?, updated_at = ? WHERE id = ?")
         .bind(snoozeUntil, reasonLabel, nowIso(), user.id)

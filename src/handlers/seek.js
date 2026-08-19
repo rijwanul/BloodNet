@@ -125,6 +125,15 @@ export async function handleSeekLock(request, env) {
     .first();
 
   if (!donor) {
+    // Session-exhausted: no eligible donor remains for this requester+group
+    // that hasn't already been shown to them. Per spec, this counts as the
+    // seeking session ending - if they come back and pick the same blood
+    // group again later (even seconds later), it should behave as a brand
+    // new request, so donors already shown in the now-finished session
+    // become eligible to be shown again. Clearing the exclusions here means
+    // the NEXT /api/seek/lock call for this requester+group starts fresh,
+    // rather than waiting on the unrelated call-limit rate-window to expire.
+    await env.DB.prepare("DELETE FROM seek_exclusions WHERE requester_id = ? AND donor_id IN (SELECT id FROM users WHERE blood_group = ?)").bind(requester.id, bloodGroup).run();
     const { results: sources } = await env.DB.prepare("SELECT name, url FROM external_sources ORDER BY sort_order ASC").all();
     return ok({ donor: null, externalSources: sources });
   }
@@ -160,22 +169,30 @@ export async function handleSeekCallStatus(request, env) {
   const settings = await getSettings(env.DB);
   const waitMonths = settingInt(settings, "eligibility_wait_months", 3);
 
-  // If this requester already logged a status for this donor in the current
-  // lock session, update that same row instead of inserting a duplicate -
-  // this is what makes "correcting a mistake" possible.
+  // A "pending" row already exists for this call attempt (created the
+  // moment the number was revealed in handleSeekDonorNumber) in the normal
+  // flow, so this is virtually always an UPDATE rather than an INSERT.
+  // isCorrection (shown as "(সংশোধিত)" in the activity log and skips the
+  // donors_managed_count bump below) means specifically "the requester
+  // already submitted a REAL status and is now resubmitting a different
+  // one" via "ভুল হয়েছে?" - not merely "a pending placeholder row existed".
   const existingCall = await env.DB
-    .prepare("SELECT id FROM calls WHERE requester_id = ? AND donor_id = ? ORDER BY created_at DESC LIMIT 1")
+    .prepare("SELECT id, status FROM calls WHERE requester_id = ? AND donor_id = ? ORDER BY created_at DESC LIMIT 1")
     .bind(requester.id, donor.id)
     .first();
   const lock = await getLock(env.KV, requester.id);
-  const isCorrection = existingCall && lock && lock.donorId === donor.id;
+  const hasExistingRow = existingCall && lock && lock.donorId === donor.id;
+  const isCorrection = hasExistingRow && existingCall.status !== "pending";
 
-  if (isCorrection) {
+  if (hasExistingRow) {
     await env.DB
       .prepare("UPDATE calls SET status = ?, cannot_reason = ?, updated_at = ? WHERE id = ?")
       .bind(status, cannotReason || null, nowIso(), existingCall.id)
       .run();
   } else {
+    // Fallback path for a call row that somehow doesn't exist yet (e.g. an
+    // older in-flight session from before this change) - keeps the old
+    // insert-plus-counter-bump behaviour so nothing breaks mid-rollout.
     await env.DB
       .prepare(
         "INSERT INTO calls (requester_id, donor_id, blood_group, status, cannot_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -222,20 +239,24 @@ export async function handleSeekCallStatus(request, env) {
     eligibilityChanged = true;
   }
 
-  if (eligibilityChanged && settings.sms_enabled_eligibility_change_by_call !== "0") {
-    const msg = fillTemplate(settings.sms_eligibility_change_by_call, { status: statusLabel(status, cannotReason) });
-    await sendNotificationSms(env.DB, settings, donor.mobile, msg, "eligibility_change_by_call");
-  }
-
-  // Release the lock only for terminal outcomes; no_answer/not_picked_up frees it too (requester should move on).
-  await env.DB.prepare("UPDATE users SET locked_by_requester_id = NULL, lock_expires_at = NULL WHERE id = ?").bind(donor.id).run();
-  await clearLock(env.KV, requester.id);
-
-  await logActivity(env.DB, {
-    actorUser: requester,
-    category: "call",
-    actionText: `${requester.mobile} → ${donor.mobile} কল করেছিলেন। ষ্ট্যাটাস: ${status}${cannotReason ? " (" + (CANNOT_REASON_LABELS[cannotReason] || cannotReason) + ")" : ""}${isCorrection ? " (সংশোধিত)" : ""}`,
-  });
+  // These four operations don't depend on each other's results, so they run
+  // concurrently instead of one-after-another - this was the main source of
+  // the noticeable delay between tapping a status button and seeing the
+  // "ষ্ট্যাটাস সংরক্ষণ করা হয়েছে" confirmation, since each round-trip to
+  // D1/KV/the SMS provider was previously awaited in sequence.
+  await Promise.all([
+    eligibilityChanged && settings.sms_enabled_eligibility_change_by_call !== "0"
+      ? sendNotificationSms(env.DB, settings, donor.mobile, fillTemplate(settings.sms_eligibility_change_by_call, { status: statusLabel(status, cannotReason) }), "eligibility_change_by_call")
+      : Promise.resolve(),
+    // Release the lock only for terminal outcomes; no_answer/not_picked_up frees it too (requester should move on).
+    env.DB.prepare("UPDATE users SET locked_by_requester_id = NULL, lock_expires_at = NULL WHERE id = ?").bind(donor.id).run(),
+    clearLock(env.KV, requester.id),
+    logActivity(env.DB, {
+      actorUser: requester,
+      category: "call",
+      actionText: `${requester.mobile} → ${donor.mobile} কল করেছিলেন। ষ্ট্যাটাস: ${status}${cannotReason ? " (" + (CANNOT_REASON_LABELS[cannotReason] || cannotReason) + ")" : ""}${isCorrection ? " (সংশোধিত)" : ""}`,
+    }),
+  ]);
 
   return ok({ recorded: true });
 }
@@ -254,8 +275,29 @@ export async function handleSeekDonorNumber(request, env) {
     return err("এই ডোনারের সাথে আপনার কোনো সক্রিয় লক নেই", 403);
   }
 
-  const donor = await env.DB.prepare("SELECT mobile FROM users WHERE id = ? AND deleted = 0").bind(donorId).first();
+  const donor = await env.DB.prepare("SELECT mobile, blood_group FROM users WHERE id = ? AND deleted = 0").bind(donorId).first();
   if (!donor) return err("ডোনার পাওয়া যায়নি", 404);
+
+  // Record the call attempt as "pending" the moment the number is actually
+  // revealed (i.e. the requester is about to place the call), not only once
+  // a status is later chosen. Without this, a requester who calls and then
+  // closes the app before picking a status left no trace at all - now that
+  // shows up in both parties' call history as "ষ্ট্যাটাস আপডেট করা হয়নি"
+  // instead of silently not existing. handleSeekCallStatus updates this
+  // same row (treating it like a correction) once a real status comes in.
+  const existing = await env.DB
+    .prepare("SELECT id FROM calls WHERE requester_id = ? AND donor_id = ? ORDER BY created_at DESC LIMIT 1")
+    .bind(requester.id, donorId)
+    .first();
+  if (!existing) {
+    await env.DB
+      .prepare("INSERT INTO calls (requester_id, donor_id, blood_group, status, created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?)")
+      .bind(requester.id, donorId, donor.blood_group, nowIso(), nowIso())
+      .run();
+    await env.DB.prepare("UPDATE users SET total_calls_made = total_calls_made + 1 WHERE id = ?").bind(requester.id).run();
+    await env.DB.prepare("UPDATE users SET total_calls_received = total_calls_received + 1 WHERE id = ?").bind(donorId).run();
+  }
+
   return ok({ mobile: donor.mobile });
 }
 

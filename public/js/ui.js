@@ -22,8 +22,19 @@ function icon(name, cls = "") {
   return s;
 }
 
+let _iconRefreshQueued = false;
 function refreshIcons() {
-  if (window.lucide) window.lucide.createIcons();
+  // Guard against re-entrancy: lucide.createIcons() itself mutates the DOM
+  // (swaps <i data-lucide> placeholders for <svg> elements), and without
+  // this guard that mutation is picked up by the MutationObserver below,
+  // which calls refreshIcons() again, which mutates the DOM again... an
+  // infinite synchronous loop that hangs the tab before anything paints.
+  if (_iconRefreshQueued) return;
+  _iconRefreshQueued = true;
+  requestAnimationFrame(() => {
+    _iconRefreshQueued = false;
+    if (window.lucide) window.lucide.createIcons();
+  });
 }
 
 // Icons are async in two ways: (1) the Lucide CDN script itself loads
@@ -36,7 +47,10 @@ function refreshIcons() {
 // MutationObserver here catches every insertion automatically, and a
 // one-time full sweep runs the moment the Lucide script finishes loading
 // so anything rendered before the library was ready still gets its icons
-// immediately instead of only on the next incidental refresh.
+// immediately instead of only on the next incidental refresh. refreshIcons()
+// is debounced via requestAnimationFrame above so this observer firing
+// repeatedly (including in response to lucide's own output) collapses into
+// a single icon pass per frame instead of looping.
 (function setupIconAutoRefresh() {
   const observer = new MutationObserver(() => refreshIcons());
   observer.observe(document.body, { childList: true, subtree: true });

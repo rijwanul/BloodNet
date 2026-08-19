@@ -533,6 +533,13 @@ ViewsAdmin.siteSettings = async function (view) {
   joinRow.appendChild(joinSw);
   card.appendChild(joinRow);
 
+  const logoutRow = h("div", { class: "toggle-row" });
+  const logoutCb = h("input", { type: "checkbox" }); logoutCb.checked = !!s.show_logout_button;
+  const logoutSw = h("label", { class: "switch" }); logoutSw.appendChild(logoutCb); logoutSw.appendChild(h("span", { class: "track" }));
+  logoutRow.appendChild(h("div", {}, [h("b", {}, "উপরে ডানদিকে লগআউট বাটন দেখানো হবে?"), h("div", { class: "small muted" }, "ডিফল্ট: বন্ধ - সেটিংস পেজেও লগআউট করা যায়")]));
+  logoutRow.appendChild(logoutSw);
+  card.appendChild(logoutRow);
+
   content.appendChild(card);
 
   // ---- seek সিষ্টেম subheading ----
@@ -574,7 +581,7 @@ ViewsAdmin.siteSettings = async function (view) {
     const avatarList = avatarsField.value.split("\n").map((s) => s.trim()).filter(Boolean);
     const payload = {
       eligibility_wait_months: waitMonths.value, self_deletion_enabled: delCb.checked, session_days: sessionDays.value,
-      show_seek_option: seekCb.checked, show_join_option: joinCb.checked, profile_share_base_url: shareBaseField.value,
+      show_seek_option: seekCb.checked, show_join_option: joinCb.checked, show_logout_button: logoutCb.checked, profile_share_base_url: shareBaseField.value,
       otp_required_for_number_change: otpCb.checked, call_limit_count: callLimitCount.value, call_limit_minutes: callLimitMinutes.value,
       donor_lock_minutes: lockMinutes.value, call_status_timer_seconds: timerSeconds.value,
       default_avatars_json: JSON.stringify(avatarList),

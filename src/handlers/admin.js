@@ -418,6 +418,7 @@ export async function handleSiteSettingsGet(request, env) {
     session_days: settings.session_days || "90",
     show_seek_option: settings.show_seek_option !== "0",
     show_join_option: settings.show_join_option !== "0",
+    show_logout_button: settings.show_logout_button === "1",
     profile_share_base_url: settings.profile_share_base_url || "",
     default_avatars_json: settings.default_avatars_json || "[]",
     // moved here from Site APIs - these govern the /seek system, not third-party credentials
@@ -442,6 +443,7 @@ export async function handleSiteSettingsUpdate(request, env) {
   if (body.session_days !== undefined) patch.session_days = String(Math.max(1, parseInt(body.session_days, 10) || 90));
   if (body.show_seek_option !== undefined) patch.show_seek_option = body.show_seek_option ? "1" : "0";
   if (body.show_join_option !== undefined) patch.show_join_option = body.show_join_option ? "1" : "0";
+  if (body.show_logout_button !== undefined) patch.show_logout_button = body.show_logout_button ? "1" : "0";
   if (body.otp_required_for_number_change !== undefined) patch.otp_required_for_number_change = body.otp_required_for_number_change ? "1" : "0";
   for (const k of ["call_limit_count", "call_limit_minutes", "donor_lock_minutes", "call_status_timer_seconds"]) {
     if (body[k] !== undefined) patch[k] = String(Math.max(1, parseInt(body[k], 10) || 1));
@@ -469,6 +471,9 @@ export async function handlePublicSettings(request, env) {
     callStatusTimerSeconds: parseInt(settings.call_status_timer_seconds || "20", 10),
     showSeekOption: settings.show_seek_option !== "0",
     showJoinOption: settings.show_join_option !== "0",
+    // Opt-in (default hidden) per spec - only "1" turns it on, unlike the
+    // other show*Option flags above which default to visible.
+    showLogoutButton: settings.show_logout_button === "1",
     otpRequiredForNumberChange: settings.otp_required_for_number_change !== "0",
     profileShareBaseUrl: settings.profile_share_base_url || "",
     defaultAvatars: safeParseJson(settings.default_avatars_json, []),

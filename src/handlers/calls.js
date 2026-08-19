@@ -18,7 +18,7 @@ export async function handleCallHistory(request, env) {
 
   const made = await env.DB
     .prepare(
-      `SELECT c.id, c.status, c.cannot_reason, c.created_at, u.username_display as donor_username, u.username_slug as donor_slug, u.id as donor_id
+      `SELECT c.id, c.status, c.cannot_reason, c.created_at, u.mobile as donor_mobile, u.username_display as donor_username, u.username_slug as donor_slug, u.id as donor_id
        FROM calls c JOIN users u ON u.id = c.donor_id
        WHERE c.requester_id = ? ORDER BY c.created_at DESC LIMIT 200`
     )
@@ -26,25 +26,37 @@ export async function handleCallHistory(request, env) {
     .all();
 
   return ok({
-    // No "আপনি/আপনাকে করেছিলেন" self-reference wording per spec; the raw
-    // masked number/label and unmodified status are shown plainly.
+    // personLabel is always "username (masked-number)" when a username
+    // exists, or just the masked number when it doesn't - the frontend
+    // wraps the whole personLabel in one hyperlink and appends suffixText
+    // (the "কে কল করেছিলেন। ষ্ট্যাটাস: ..." part) unlinked, outside the <a>.
+    // No "আপনি/আপনাকে করেছিলেন" self-reference wording per spec.
     received: received.results.map((r) => ({
       id: r.id,
       requesterId: r.requester_id,
-      requesterLabel: r.requester_username || maskMobile(r.requester_mobile),
-      requesterSlug: r.requester_username || null,
-      text: `${maskMobile(r.requester_mobile)} কল করেছিলো। ষ্ট্যাটাস: ${statusLabel(r.status, r.cannot_reason)}`,
+      personLabel: personLabelWithNumber(r.requester_username, r.requester_mobile),
+      slug: r.requester_username || null,
+      suffixText: `কল করেছিলো। ষ্ট্যাটাস: ${statusLabel(r.status, r.cannot_reason)}`,
       createdAt: r.created_at,
     })),
     made: made.results.map((r) => ({
       id: r.id,
       donorId: r.donor_id,
-      donorLabel: r.donor_username || "একজন ডোনার",
-      donorSlug: r.donor_slug,
-      text: `${r.donor_username || "একজন ডোনার"} কে কল করেছিলেন। ষ্ট্যাটাস: ${statusLabel(r.status, r.cannot_reason)}`,
+      personLabel: personLabelWithNumber(r.donor_username, r.donor_mobile),
+      slug: r.donor_slug,
+      suffixText: `কে কল করেছিলেন। ষ্ট্যাটাস: ${statusLabel(r.status, r.cannot_reason)}`,
       createdAt: r.created_at,
     })),
   });
+}
+
+// "username (013******90)" when a username is claimed, otherwise just the
+// masked number on its own - either way this whole string is meant to be
+// wrapped in a single hyperlink by the caller.
+function personLabelWithNumber(username, mobile) {
+  const masked = maskMobile(mobile);
+  if (username) return `${username} (${masked})`;
+  return masked;
 }
 
 // Used by the public profile page's own call-history tab (third-party
@@ -52,7 +64,7 @@ export async function handleCallHistory(request, env) {
 export async function publicCallHistoryFor(db, userId) {
   const { results } = await db
     .prepare(
-      `SELECT c.status, c.cannot_reason, c.created_at, u.mobile as requester_mobile, u.username_display as requester_username, u.id as requester_id
+      `SELECT c.status, c.cannot_reason, c.created_at, u.mobile as requester_mobile, u.username_display as requester_username, u.username_slug as requester_slug, u.id as requester_id
        FROM calls c JOIN users u ON u.id = c.requester_id
        WHERE c.donor_id = ? ORDER BY c.created_at DESC LIMIT 100`
     )
@@ -60,9 +72,9 @@ export async function publicCallHistoryFor(db, userId) {
     .all();
   return results.map((r) => ({
     requesterId: r.requester_id,
-    requesterLabel: r.requester_username || maskMobile(r.requester_mobile),
-    requesterSlug: r.requester_username || null,
-    text: `${maskMobile(r.requester_mobile)} কল করেছিলো। ষ্ট্যাটাস: ${statusLabel(r.status, r.cannot_reason)}`,
+    personLabel: personLabelWithNumber(r.requester_username, r.requester_mobile),
+    slug: r.requester_slug || null,
+    suffixText: `কল করেছিলো। ষ্ট্যাটাস: ${statusLabel(r.status, r.cannot_reason)}`,
     createdAt: r.created_at,
   }));
 }

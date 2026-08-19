@@ -63,7 +63,11 @@ function renderTopbar() {
     if (APP.user.isAdmin || APP.user.isRootAdmin) {
       bar.appendChild(h("a", { href: "/admin", "data-link": "", class: "topbar__link", title: "এডমিন প্যানেল" }, icon("shield", "small")));
     }
-    bar.appendChild(h("button", { class: "topbar__link", title: "লগআউট", onclick: doLogout, style: "background:none;border:none;cursor:pointer" }, icon("log-out", "small")));
+    // Hidden by default (admin-configurable) - logout is always still
+    // reachable from the সেটিংস page even when this is off.
+    if (settings.showLogoutButton) {
+      bar.appendChild(h("button", { class: "topbar__link", title: "লগআউট", onclick: doLogout, style: "background:none;border:none;cursor:pointer" }, icon("log-out", "small")));
+    }
   } else {
     bar.appendChild(h("a", { href: "/login", "data-link": "", class: "topbar__link" }, "লগইন"));
   }
@@ -111,12 +115,24 @@ function applyBranding() {
   if (s.themeColor) document.documentElement.style.setProperty("--primary", s.themeColor);
 }
 
+let _loggingOut = false;
 async function doLogout() {
-  try { await API.post("/api/auth/logout"); } catch { /* ignore */ }
+  // Guards against the perceived "sometimes doesn't work" symptom: without
+  // this, a slow network made the button look unresponsive with zero
+  // feedback, so a person would tap it again (re-entering this function
+  // mid-flight) or navigate away assuming it failed. Now the state flips to
+  // logged-out optimistically and immediately, and the API call to actually
+  // clear the cookie happens in the background - a failure there is non-
+  // fatal since the cookie is HttpOnly and short-lived, and logging back in
+  // simply issues a fresh one regardless.
+  if (_loggingOut) return;
+  _loggingOut = true;
   APP.user = null;
   renderTopbar();
   renderBottomNav("/");
   navigate("/");
+  try { await API.post("/api/auth/logout"); } catch { /* non-fatal, see above */ }
+  _loggingOut = false;
 }
 window.doLogout = doLogout;
 

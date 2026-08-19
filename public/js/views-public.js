@@ -113,17 +113,21 @@ async function renderOtpStep(container, mobile, purpose, onDone, onBack) {
   const otpField = h("input", { type: "text", inputmode: "numeric", maxlength: "6", placeholder: "৬ সংখ্যার OTP" });
   const pwWrap = passwordField("আপনার ইচ্ছেমতো নতুন পাসওয়ার্ড");
   const pwField = pwWrap.querySelector("input");
+  const confirmWrap = passwordField("পাসওয়ার্ড আবার লিখুন");
+  const confirmField = confirmWrap.querySelector("input");
   const errBox = h("div", { class: "field-error" });
   const submitBtn = h("button", { class: "btn btn-primary" }, purpose === "reset" ? "পাসওয়ার্ড রিসেট করুন" : "নিশ্চিত করুন");
   card.appendChild(h("div", { class: "field" }, [h("label", {}, "ওটিপি কোড"), otpField]));
-  card.appendChild(h("div", { class: "field" }, [h("label", {}, "আপনার ইচ্ছেমতো নতুন পাসওয়ার্ড"), pwWrap, errBox]));
+  card.appendChild(h("div", { class: "field" }, [h("label", {}, "আপনার ইচ্ছেমতো নতুন পাসওয়ার্ড"), pwWrap]));
+  card.appendChild(h("div", { class: "field" }, [h("label", {}, "পাসওয়ার্ড নিশ্চিত করুন"), confirmWrap, errBox]));
   card.appendChild(submitBtn);
   container.appendChild(card);
-  enterSubmits([otpField, pwField], submitBtn);
+  enterSubmits([otpField, pwField, confirmField], submitBtn);
   otpField.focus();
 
   submitBtn.onclick = async () => {
     errBox.textContent = "";
+    if (pwField.value !== confirmField.value) { errBox.textContent = "পাসওয়ার্ড দুটি মিলছে না"; return; }
     submitBtn.disabled = true;
     try {
       if (purpose === "reset") {
@@ -291,10 +295,8 @@ function renderDonorCard(box, donor, bloodGroup) {
   if (donor.note) card.appendChild(h("div", { class: "donor-card__note" }, `নোট: ${donor.note}`));
 
   const callBtn = h("button", { class: "btn btn-primary" }, [icon("phone", "small"), " কল করুন (" + donor.mobileMasked + ")"]);
-  const numberLine = h("p", { class: "center small muted", style: "display:none" });
   const statusBox = h("div", { style: "display:none;margin-top:14px" });
   card.appendChild(callBtn);
-  card.appendChild(numberLine);
   card.appendChild(statusBox);
   box.appendChild(card);
 
@@ -316,8 +318,6 @@ function renderDonorCard(box, donor, bloodGroup) {
         return;
       }
       revealed = true;
-      numberLine.textContent = `নাম্বার: ${realMobile}`;
-      numberLine.style.display = "block";
       callBtn.dataset.mobile = realMobile;
       callBtn.disabled = false;
       callBtn.innerHTML = "";
@@ -337,7 +337,7 @@ function renderDonorCard(box, donor, bloodGroup) {
       if (seconds <= 0) {
         clearInterval(timer);
         timerLine.remove();
-        renderCallStatusButtons(statusBox, box, donor, bloodGroup);
+        renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn);
       } else {
         timerLine.textContent = `${toBnDigits(seconds)} সেকেন্ড পর ষ্ট্যাটাস আপডেট করতে পারবেন…`;
       }
@@ -348,7 +348,7 @@ function renderDonorCard(box, donor, bloodGroup) {
     h("a", { href: "#", onclick: (e) => { e.preventDefault(); renderBloodGroupStep(document.getElementById("view")); } }, "আবার শুরু")));
 }
 
-function renderCallStatusButtons(statusBox, box, donor, bloodGroup) {
+function renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn) {
   statusBox.innerHTML = "";
   statusBox.appendChild(h("p", { class: "small muted" }, "কলের পর ষ্ট্যাটাস জানান:"));
   const options = [
@@ -359,42 +359,49 @@ function renderCallStatusButtons(statusBox, box, donor, bloodGroup) {
   ];
   const row = h("div", { class: "stack" });
   options.forEach((opt) => {
-    row.appendChild(h("button", { class: "btn btn-outline", onclick: () => handleCallStatus(statusBox, box, donor, bloodGroup, opt.key) }, opt.label));
+    row.appendChild(h("button", { class: "btn btn-outline", onclick: () => handleCallStatus(statusBox, box, donor, bloodGroup, opt.key, callBtn) }, opt.label));
   });
   statusBox.appendChild(row);
 }
 
-async function handleCallStatus(statusBox, box, donor, bloodGroup, status) {
+async function handleCallStatus(statusBox, box, donor, bloodGroup, status, callBtn) {
   if (status === "cannot_donate") {
     statusBox.innerHTML = "";
     const card = h("div", { class: "stack" });
     card.appendChild(h("h3", {}, "কেন রক্ত দিতে পারবেন না?"));
     CANNOT_REASONS.forEach((r) => {
-      card.appendChild(h("button", { class: "btn btn-outline", onclick: () => submitCallStatus(statusBox, box, donor, bloodGroup, status, r.key) }, r.label));
+      card.appendChild(h("button", { class: "btn btn-outline", onclick: () => submitCallStatus(statusBox, box, donor, bloodGroup, status, r.key, callBtn) }, r.label));
     });
     statusBox.appendChild(card);
     return;
   }
-  await submitCallStatus(statusBox, box, donor, bloodGroup, status, null);
+  await submitCallStatus(statusBox, box, donor, bloodGroup, status, null, callBtn);
 }
 
-async function submitCallStatus(statusBox, box, donor, bloodGroup, status, cannotReason) {
+async function submitCallStatus(statusBox, box, donor, bloodGroup, status, cannotReason, callBtn) {
   try {
     await API.post("/api/seek/call-status", { donorId: donor.id, status, cannotReason });
   } catch (e) { toast(e.message); return; }
+
+  // Once a status is recorded, the call button is hidden - re-dialing from
+  // this card is no longer offered unless the requester explicitly says
+  // the status was a mistake and picks again ("ভুল হয়েছে? আবার নির্বাচন করুন"),
+  // which restores it.
+  if (callBtn) callBtn.style.display = "none";
 
   statusBox.innerHTML = "";
   const resultCard = h("div", { class: "center stack" });
   if (status === "can_donate") {
     resultCard.appendChild(h("p", {}, "আলহামদুলিল্লাহ। রক্ত ম্যানেজ হয়েছে।"));
-    resultCard.appendChild(h("a", { href: "/", "data-link": "", class: "btn btn-primary" }, "মেইন মেনু"));
   } else {
     resultCard.appendChild(h("p", {}, "ষ্ট্যাটাস সংরক্ষণ করা হয়েছে।"));
     // Mistake correction: let the requester pick a different status for the
     // same call attempt instead of it being permanent.
-    resultCard.appendChild(h("button", { class: "btn btn-outline", onclick: () => renderCallStatusButtons(statusBox, box, donor, bloodGroup) }, "ভুল হয়েছে? আবার নির্বাচন করুন"));
+    resultCard.appendChild(h("button", {
+      class: "btn btn-outline",
+      onclick: () => { if (callBtn) callBtn.style.display = ""; renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn); },
+    }, "ভুল হয়েছে? আবার নির্বাচন করুন"));
     resultCard.appendChild(h("button", { class: "btn btn-primary", onclick: () => showNextDonor(box, bloodGroup) }, "পরবর্তী ডোনার দেখুন"));
-    resultCard.appendChild(h("a", { href: "/", "data-link": "", class: "btn btn-outline" }, "মেইন মেনু"));
   }
   statusBox.appendChild(resultCard);
 }
@@ -488,7 +495,7 @@ ViewsPublic.publicProfile = async function (view, slug) {
     const calls = profile.calls || [];
     if (!calls.length) callCard.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
     calls.forEach((c) => callCard.appendChild(h("div", { class: "list-item" }, h("span", {}, [
-      personLink(c.requesterLabel, c.requesterSlug), " " + c.text.replace(c.requesterLabel, "").trim(),
+      personLink(c.personLabel, c.slug), " " + c.suffixText,
     ]))));
     view.appendChild(callCard);
   }
