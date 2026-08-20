@@ -240,7 +240,9 @@ th { color: var(--ink-soft); font-weight: 600; font-size: 0.8rem; text-transform
 .modal-actions { display: flex; gap: 10px; padding: 0 18px 18px; justify-content: flex-end; }
 .modal-actions .btn { width: auto; }
 
-/* ------------------------------------------------------------- bottom nav */
+.sidebar-collapse-btn { display: none; }
+
+/* ------------------------------------------------------- bottom nav */
 .bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; background: rgba(255,255,255,0.97); backdrop-filter: blur(6px); border-top: 1px solid var(--line); display: flex; justify-content: space-around; padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); }
 .bottom-nav a { display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 0.68rem; color: var(--ink-soft); font-weight: 600; padding: 6px 4px; border-radius: 10px; flex: 1; max-width: 92px; }
 .bottom-nav a svg, .bottom-nav a i { width: 21px; height: 21px; }
