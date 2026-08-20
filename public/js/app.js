@@ -79,6 +79,23 @@ function renderTopbar() {
 // কল হিষ্ট্রি / সেটিংস. Only shown once logged in. On mobile it's fixed to
 // the bottom; on desktop it becomes a horizontal bar under the topbar
 // (CSS-only difference) so every logged-in feature stays reachable on both.
+// Sidebar collapse state (desktop only) - a plain client-side UI
+// preference. A cookie is used here per explicit request; localStorage
+// would be the more typical choice for a preference the server never
+// needs to read, but a cookie works fine too and this app already reads/
+// writes its own cookies for session state elsewhere.
+const SIDEBAR_COOKIE = "bnetv2_sidebar_collapsed";
+function getSidebarCollapsed() {
+  const match = document.cookie.match(new RegExp("(?:^|; )" + SIDEBAR_COOKIE + "=([^;]*)"));
+  // Default to collapsed (per feedback: the narrow icon-only rail was
+  // preferred) - only an explicit "false" in the cookie expands it.
+  return match ? match[1] !== "false" : true;
+}
+function setSidebarCollapsed(collapsed) {
+  const oneYear = 365 * 24 * 60 * 60;
+  document.cookie = `${SIDEBAR_COOKIE}=${collapsed}; path=/; max-age=${oneYear}; SameSite=Lax`;
+}
+
 function renderBottomNav(activePath) {
   let nav = document.getElementById("bottomNav");
   if (!APP.user) {
@@ -89,6 +106,7 @@ function renderBottomNav(activePath) {
     nav = h("nav", { id: "bottomNav", class: "bottom-nav" });
     document.body.appendChild(nav);
   }
+  nav.dataset.collapsed = String(getSidebarCollapsed());
   nav.innerHTML = "";
   const profileHref = APP.user.username ? "/" + APP.user.username : "/profile";
   const items = [];
@@ -106,6 +124,23 @@ function renderBottomNav(activePath) {
     if (isActive) a.classList.add("active");
     nav.appendChild(a);
   });
+
+  // Collapse/expand toggle - desktop-only control (hidden by the mobile
+  // bottom-bar CSS, same as the rest of .bottom-nav's desktop styling).
+  const collapsed = getSidebarCollapsed();
+  const toggleLabel = collapsed ? "বড় করুন" : "ছোট করুন";
+  const toggleBtn = h(
+    "button",
+    { type: "button", class: "sidebar-collapse-btn", title: collapsed ? "সাইডবার বড় করুন" : "সাইডবার ছোট করুন" },
+    [icon("chevron-left"), h("span", {}, toggleLabel)]
+  );
+  toggleBtn.onclick = () => {
+    const next = !getSidebarCollapsed();
+    setSidebarCollapsed(next);
+    nav.dataset.collapsed = String(next);
+    renderBottomNav(activePath); // re-render so the toggle's own label/title/icon direction reflect the new state
+  };
+  nav.appendChild(toggleBtn);
   refreshIcons();
 }
 
