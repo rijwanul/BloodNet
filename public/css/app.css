@@ -55,13 +55,16 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 /* ---------- top bar ---------- */
 .topbar { display: flex; align-items: center; gap: 10px; padding: 14px 18px; position: sticky; top: 0; background: rgba(250,248,246,0.92); backdrop-filter: blur(6px); z-index: 20; border-bottom: 1px solid var(--line); }
 @media (min-width: 900px) {
-  /* Matches .bottom-nav's switch to fixed positioning below - both bars
-     are fixed at a known stacked height on desktop instead of relying on
-     two separately-stacked sticky elements, which is the combination that
-     proved unreliable across browsers. Centered/width-matched to #app's
-     max-width column (not left:0;right:0 spanning the full viewport)
-     since #app itself is a centered column on desktop. */
-  .topbar { position: fixed; top: 0; left: 50%; transform: translateX(-50%); width: 100%; max-width: 720px; z-index: 21; }
+  /* position:fixed rather than sticky - sticky's "stuck" state depends on
+     the nearest scrolling ancestor's containing-block rules, which proved
+     unreliable in practice (reported as "not sticky" on the profile page
+     in particular); fixed has no such dependency. Left offset matches the
+     sidebar's width (set below) so the topbar spans only the space to the
+     right of it, not the full viewport. */
+  .topbar { position: fixed; top: 0; left: 220px; right: 0; z-index: 21; }
+}
+@media (min-width: 900px) and (max-width: 1099px) {
+  .topbar { left: 76px; }
 }
 .topbar__logo { display: flex; align-items: center; gap: 8px; font-family: var(--font-bn); font-weight: 700; font-size: 1.15rem; color: var(--primary-dark); }
 .topbar__logo img { height: 28px; width: 28px; border-radius: 7px; object-fit: cover; }
@@ -247,27 +250,33 @@ th { color: var(--ink-soft); font-weight: 600; font-size: 0.8rem; text-transform
 #app { padding-bottom: 84px; }
 #toast { bottom: 92px; }
 
-/* On desktop the same nav becomes a second horizontal bar docked under the
-   topbar instead of disappearing - people still need a way to reach রক্ত
-   দরকার / প্রোফাইল / কল হিষ্ট্রি / সেটিংস without it.
-   Uses position: fixed (not sticky) - sticky's "stuck" state depends on
-   the nearest scrolling ancestor's containing-block rules, which proved
-   unreliable in practice (reported as "not sticky" on the profile page in
-   particular); fixed positioning anchored under the topbar's fixed height
-   has no such dependency and behaves identically everywhere. */
+/* On desktop the same nav becomes a fixed vertical sidebar on the left
+   instead of a bottom bar - a bottom bar doesn't make sense once there's
+   room for a proper sidebar, and it lets the page content use the full
+   width instead of staying constrained to a mobile-style centered column. */
 @media (min-width: 900px) {
   .bottom-nav {
-    position: fixed; top: 61px; bottom: auto; left: 50%; right: auto; transform: translateX(-50%); width: 100%; max-width: 720px;
-    border-top: none; border-bottom: 1px solid var(--line);
-    justify-content: center; gap: 6px; padding: 10px 4px;
+    position: fixed; top: 0; left: 0; bottom: 0; right: auto; width: 220px; transform: none;
+    max-width: none; flex-direction: column; align-items: stretch; justify-content: flex-start;
+    gap: 2px; padding: 84px 12px 20px; border-top: none; border-right: 1px solid var(--line);
+    overflow-y: auto;
   }
-  .bottom-nav a { flex-direction: row; font-size: 0.85rem; max-width: none; padding: 8px 14px; }
-  .bottom-nav a svg, .bottom-nav a i { width: 17px; height: 17px; }
-  /* #app needs top padding now too, matching the topbar+nav combined
-     height, since both are fixed/removed from normal flow on desktop and
-     would otherwise overlap the page content instead of pushing it down. */
-  #app { padding-bottom: 40px; padding-top: 108px; }
+  .bottom-nav a { flex-direction: row; justify-content: flex-start; gap: 10px; font-size: 0.9rem; max-width: none; padding: 10px 12px; }
+  .bottom-nav a svg, .bottom-nav a i { width: 19px; height: 19px; }
+  /* .topbar's fixed positioning/left-offset is set in its own media query
+     above - nothing further needed here. */
+  #app { margin: 0; max-width: none; padding-left: 220px; padding-top: 76px; padding-bottom: 40px; padding-right: 0; }
+  #view { max-width: 760px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
   #toast { bottom: 24px; }
+}
+
+@media (min-width: 900px) and (max-width: 1099px) {
+  /* Slightly narrower sidebar on medium desktop widths so content still
+     has comfortable breathing room before the 1100px+ full layout. */
+  .bottom-nav { width: 76px; padding-left: 8px; padding-right: 8px; }
+  .bottom-nav a { flex-direction: column; text-align: center; font-size: 0.65rem; gap: 4px; padding: 10px 4px; }
+  .topbar { left: 76px; }
+  #app { padding-left: 76px; }
 }
 
 /* ------------------------------------------------- back button on auth steps */

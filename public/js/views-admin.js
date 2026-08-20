@@ -25,6 +25,26 @@ function adminNav(active) {
 // Every admin page shares this shell: a heading, the nav (sidebar on
 // desktop via .admin-layout/.admin-content flex, a horizontal scroller on
 // mobile), and a content area callers append their page-specific UI into.
+// Wires a checkbox to save immediately on change, via whichever settings
+// endpoint the caller specifies - toggle switches across the admin panel
+// no longer require a separate "সংরক্ষণ করুন" click, per spec. Reverts the
+// checkbox and shows the error if the save fails, so the UI never shows a
+// state that wasn't actually persisted.
+function wireInstantToggle(checkbox, putFn, key) {
+  checkbox.onchange = async () => {
+    const newValue = checkbox.checked;
+    checkbox.disabled = true;
+    try {
+      await putFn({ [key]: newValue });
+    } catch (e) {
+      checkbox.checked = !newValue;
+      toast(e.message);
+    } finally {
+      checkbox.disabled = false;
+    }
+  };
+}
+
 function adminPage(view, title, activePath) {
   view.innerHTML = "";
   view.appendChild(h("h2", {}, title));
@@ -462,6 +482,19 @@ function openPurgeModal(reload, currentPage) {
   body.appendChild(autoRow);
   const autoDaysField = h("input", { type: "number", min: "1", placeholder: "৩০" });
   body.appendChild(h("div", { class: "field" }, [h("label", {}, "প্রতি কতদিন পর পুরনো এন্ট্রি স্বয়ংক্রিয়ভাবে ডিলিট হবে?"), autoDaysField]));
+  // Toggling this applies instantly (sends the currently-shown day count
+  // alongside it, since the endpoint expects both together) - the days
+  // field itself still needs the explicit সংরক্ষণ করুন button below since
+  // changing a number mid-typing shouldn't fire a save on every keystroke.
+  autoCb.onchange = async () => {
+    autoCb.disabled = true;
+    try {
+      const days = parseInt(autoDaysField.value, 10) || 30;
+      await API.put("/api/admin/activity-log/auto-purge", { enabled: autoCb.checked, olderThanDays: days });
+      toast("সংরক্ষণ করা হয়েছে");
+    } catch (e) { autoCb.checked = !autoCb.checked; toast(e.message); }
+    finally { autoCb.disabled = false; }
+  };
   const saveAutoBtn = h("button", { class: "btn btn-outline btn-sm" }, "সংরক্ষণ করুন");
   body.appendChild(saveAutoBtn);
 
@@ -518,6 +551,7 @@ ViewsAdmin.smsSettings = async function (view) {
 
   const testModeRow = h("div", { class: "toggle-row" });
   const testModeCb = h("input", { type: "checkbox" }); testModeCb.checked = !!s.otp_test_mode;
+  wireInstantToggle(testModeCb, (p) => API.put("/api/admin/sms-settings", p), "otp_test_mode");
   testModeRow.appendChild(h("div", {}, [h("b", {}, "OTP টেস্ট মোড"), h("div", { class: "small muted" }, "এক্টিভ থাকলে ম্যানুয়াল OTP খালি হলে OTP এসএমএস না পাঠিয়ে এক্টিভিটি লগে দেখাবে")]));
   const sw = h("label", { class: "switch" }); sw.appendChild(testModeCb); sw.appendChild(h("span", { class: "track" }));
   testModeRow.appendChild(sw);
@@ -551,6 +585,7 @@ ViewsAdmin.smsSettings = async function (view) {
     const row = h("div", { class: "toggle-row" });
     const cb = h("input", { type: "checkbox" }); cb.checked = s[key] !== false;
     toggleChecks[key] = cb;
+    wireInstantToggle(cb, (p) => API.put("/api/admin/sms-settings", p), key);
     const tsw = h("label", { class: "switch" }); tsw.appendChild(cb); tsw.appendChild(h("span", { class: "track" }));
     row.appendChild(h("div", {}, label));
     row.appendChild(tsw);
@@ -680,6 +715,7 @@ ViewsAdmin.siteApis = async function (view) {
 
   const checkRow = h("div", { class: "toggle-row" });
   const checkCb = h("input", { type: "checkbox" }); checkCb.checked = !!s.donorbd_check_before_claim;
+  wireInstantToggle(checkCb, (p) => API.put("/api/admin/site-apis", p), "donorbd_check_before_claim");
   const checkSw = h("label", { class: "switch" }); checkSw.appendChild(checkCb); checkSw.appendChild(h("span", { class: "track" }));
   checkRow.appendChild(h("div", {}, [h("b", {}, "ইউজারনেইম ক্লেইমের আগে DonorBD ক্রসচেক প্রয়োজন?")]));
   checkRow.appendChild(checkSw);
@@ -730,6 +766,7 @@ ViewsAdmin.siteSettings = async function (view) {
 
   const delRow = h("div", { class: "toggle-row" });
   const delCb = h("input", { type: "checkbox" }); delCb.checked = !!s.self_deletion_enabled;
+  wireInstantToggle(delCb, (p) => API.put("/api/admin/site-settings", p), "self_deletion_enabled");
   const delSw = h("label", { class: "switch" }); delSw.appendChild(delCb); delSw.appendChild(h("span", { class: "track" }));
   delRow.appendChild(h("div", {}, [h("b", {}, "ইউজার নিজে প্রোফাইল ডিলেট করতে পারবে?")]));
   delRow.appendChild(delSw);
@@ -737,6 +774,7 @@ ViewsAdmin.siteSettings = async function (view) {
 
   const seekRow = h("div", { class: "toggle-row" });
   const seekCb = h("input", { type: "checkbox" }); seekCb.checked = !!s.show_seek_option;
+  wireInstantToggle(seekCb, (p) => API.put("/api/admin/site-settings", p), "show_seek_option");
   const seekSw = h("label", { class: "switch" }); seekSw.appendChild(seekCb); seekSw.appendChild(h("span", { class: "track" }));
   seekRow.appendChild(h("div", {}, [h("b", {}, "হোমপেজে \"রক্ত দরকার\" দেখানো হবে?")]));
   seekRow.appendChild(seekSw);
@@ -744,6 +782,7 @@ ViewsAdmin.siteSettings = async function (view) {
 
   const joinRow = h("div", { class: "toggle-row" });
   const joinCb = h("input", { type: "checkbox" }); joinCb.checked = !!s.show_join_option;
+  wireInstantToggle(joinCb, (p) => API.put("/api/admin/site-settings", p), "show_join_option");
   const joinSw = h("label", { class: "switch" }); joinSw.appendChild(joinCb); joinSw.appendChild(h("span", { class: "track" }));
   joinRow.appendChild(h("div", {}, [h("b", {}, "হোমপেজে \"রক্ত দিতে প্রস্তুত\" দেখানো হবে?")]));
   joinRow.appendChild(joinSw);
@@ -751,6 +790,7 @@ ViewsAdmin.siteSettings = async function (view) {
 
   const logoutRow = h("div", { class: "toggle-row" });
   const logoutCb = h("input", { type: "checkbox" }); logoutCb.checked = !!s.show_logout_button;
+  wireInstantToggle(logoutCb, (p) => API.put("/api/admin/site-settings", p), "show_logout_button");
   const logoutSw = h("label", { class: "switch" }); logoutSw.appendChild(logoutCb); logoutSw.appendChild(h("span", { class: "track" }));
   logoutRow.appendChild(h("div", {}, [h("b", {}, "উপরে ডানদিকে লগআউট বাটন দেখানো হবে?"), h("div", { class: "small muted" }, "ডিফল্ট: বন্ধ - সেটিংস পেজেও লগআউট করা যায়")]));
   logoutRow.appendChild(logoutSw);
@@ -764,6 +804,7 @@ ViewsAdmin.siteSettings = async function (view) {
 
   const otpRow = h("div", { class: "toggle-row" });
   const otpCb = h("input", { type: "checkbox" }); otpCb.checked = !!s.otp_required_for_number_change;
+  wireInstantToggle(otpCb, (p) => API.put("/api/admin/site-settings", p), "otp_required_for_number_change");
   const otpSw = h("label", { class: "switch" }); otpSw.appendChild(otpCb); otpSw.appendChild(h("span", { class: "track" }));
   otpRow.appendChild(h("div", {}, [h("b", {}, "মোবাইল পরিবর্তনে OTP আবশ্যক?")]));
   otpRow.appendChild(otpSw);
