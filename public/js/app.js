@@ -102,7 +102,7 @@ function renderBottomNav(activePath) {
     const isActive = path === profileHref
       ? (activePath === "/profile" || activePath === profileHref)
       : activePath === path;
-    const a = h("a", { href: path, "data-link": "" }, [icon(iconName), h("span", {}, label)]);
+    const a = h("a", { href: path, "data-link": "", title: label }, [icon(iconName), h("span", {}, label)]);
     if (isActive) a.classList.add("active");
     nav.appendChild(a);
   });

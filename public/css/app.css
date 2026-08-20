@@ -61,10 +61,10 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
      in particular); fixed has no such dependency. Left offset matches the
      sidebar's width (set below) so the topbar spans only the space to the
      right of it, not the full viewport. */
-  .topbar { position: fixed; top: 0; left: 220px; right: 0; z-index: 21; }
+  .topbar { position: fixed; top: 0; left: 216px; right: 0; z-index: 21; }
 }
 @media (min-width: 900px) and (max-width: 1099px) {
-  .topbar { left: 76px; }
+  .topbar { left: 68px; }
 }
 .topbar__logo { display: flex; align-items: center; gap: 8px; font-family: var(--font-bn); font-weight: 700; font-size: 1.15rem; color: var(--primary-dark); }
 .topbar__logo img { height: 28px; width: 28px; border-radius: 7px; object-fit: cover; }
@@ -251,32 +251,52 @@ th { color: var(--ink-soft); font-weight: 600; font-size: 0.8rem; text-transform
 #toast { bottom: 92px; }
 
 /* On desktop the same nav becomes a fixed vertical sidebar on the left
-   instead of a bottom bar - a bottom bar doesn't make sense once there's
-   room for a proper sidebar, and it lets the page content use the full
-   width instead of staying constrained to a mobile-style centered column. */
+   instead of a bottom bar - lets page content use the full width instead
+   of staying constrained to a mobile-style centered column. Sized and
+   styled as a genuine compact sidebar (tight row height, small icons, a
+   thin accent bar marking the active item) rather than the mobile bottom
+   bar's touch-target-sized rows stretched into a vertical list. */
 @media (min-width: 900px) {
   .bottom-nav {
-    position: fixed; top: 0; left: 0; bottom: 0; right: auto; width: 220px; transform: none;
+    position: fixed; top: 0; left: 0; bottom: 0; right: auto; width: 216px; transform: none;
     max-width: none; flex-direction: column; align-items: stretch; justify-content: flex-start;
-    gap: 2px; padding: 84px 12px 20px; border-top: none; border-right: 1px solid var(--line);
-    overflow-y: auto;
+    gap: 1px; padding: 88px 10px 20px; border-top: none; border-right: 1px solid var(--line);
+    overflow-y: auto; background: var(--surface);
   }
-  .bottom-nav a { flex-direction: row; justify-content: flex-start; gap: 10px; font-size: 0.9rem; max-width: none; padding: 10px 12px; }
-  .bottom-nav a svg, .bottom-nav a i { width: 19px; height: 19px; }
+  .bottom-nav a {
+    flex-direction: row; justify-content: flex-start; align-items: center; gap: 11px;
+    font-size: 0.84rem; line-height: 1.15; font-weight: 600; max-width: none;
+    padding: 9px 12px; border-radius: 9px; position: relative;
+  }
+  .bottom-nav a svg, .bottom-nav a i { width: 16px; height: 16px; flex-shrink: 0; }
+  /* Thin left accent bar for the active item, rather than a full-width
+     colored block - a quieter, more deliberate "you are here" marker that
+     matches the crimson identity used elsewhere without repeating the
+     same solid-fill pattern .btn-primary already owns. */
+  .bottom-nav a.active { color: var(--primary); background: var(--primary-tint); }
+  .bottom-nav a.active::before {
+    content: ""; position: absolute; left: -10px; top: 6px; bottom: 6px; width: 3px;
+    border-radius: 0 3px 3px 0; background: var(--primary);
+  }
+  .bottom-nav a:hover { background: var(--surface-2); }
+  .bottom-nav a.active:hover { background: var(--primary-tint); }
   /* .topbar's fixed positioning/left-offset is set in its own media query
      above - nothing further needed here. */
-  #app { margin: 0; max-width: none; padding-left: 220px; padding-top: 76px; padding-bottom: 40px; padding-right: 0; }
+  #app { margin: 0; max-width: none; padding-left: 216px; padding-top: 76px; padding-bottom: 40px; padding-right: 0; }
   #view { max-width: 760px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
   #toast { bottom: 24px; }
 }
 
 @media (min-width: 900px) and (max-width: 1099px) {
-  /* Slightly narrower sidebar on medium desktop widths so content still
-     has comfortable breathing room before the 1100px+ full layout. */
-  .bottom-nav { width: 76px; padding-left: 8px; padding-right: 8px; }
-  .bottom-nav a { flex-direction: column; text-align: center; font-size: 0.65rem; gap: 4px; padding: 10px 4px; }
-  .topbar { left: 76px; }
-  #app { padding-left: 76px; }
+  /* Icon-only rail on medium desktop widths - labels reappear at 1100px+
+     where there's comfortable room for them. */
+  .bottom-nav { width: 68px; padding-left: 8px; padding-right: 8px; }
+  .bottom-nav a { flex-direction: column; justify-content: center; text-align: center; gap: 3px; padding: 10px 4px; }
+  .bottom-nav a span { display: none; }
+  .bottom-nav a svg, .bottom-nav a i { width: 18px; height: 18px; }
+  .bottom-nav a.active::before { left: -8px; }
+  .topbar { left: 68px; }
+  #app { padding-left: 68px; }
 }
 
 /* ------------------------------------------------- back button on auth steps */
