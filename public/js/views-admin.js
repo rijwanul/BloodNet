@@ -6,6 +6,7 @@ const ADMIN_NAV_ITEMS = [
   ["/admin/external-sources", "external-link", "এক্সটার্নাল সোর্সেস"],
   ["/admin/activity-log", "history", "এক্টিভিটি লগ"],
   ["/admin/sms", "message-square", "এসএমএস সেটিংস"],
+  ["/admin/sms-analytics", "bar-chart-3", "এসএমএস এনালিটিক্স"],
   ["/admin/site-apis", "key", "সাইট এপিআই"],
   ["/admin/site-settings", "settings-2", "সাইট সেটিংস"],
   ["/admin/locations", "map-pin", "লোকেশন"],
@@ -92,7 +93,7 @@ ViewsAdmin.users = async function (view) {
     const bulkBar = h("div", { class: "row", style: "margin-bottom:10px" });
     const selectAll = h("input", { type: "checkbox" });
     const bulkSelect = h("select");
-    [["disable", "নিষ্ক্রিয় করুন"], ["enable", "সক্রিয় করুন"], ["reset_password", "পাসওয়ার্ড রিসেট"], ["delete", "ডিলিট"]]
+    [["disable", "নিষ্ক্রিয় করুন"], ["enable", "সক্রিয় করুন"], ["reset_password", "পাসওয়ার্ড রিসেট"], ["sms_limit", "এসএমএস লিমিট পরিবর্তন"], ["delete", "ডিলিট"]]
       .forEach(([v, l]) => bulkSelect.appendChild(h("option", { value: v }, l)));
     const bulkBtn = h("button", { class: "btn btn-sm btn-outline" }, "প্রয়োগ করুন");
     bulkBar.appendChild(selectAll); bulkBar.appendChild(bulkSelect); bulkBar.appendChild(bulkBtn);
@@ -119,6 +120,9 @@ ViewsAdmin.users = async function (view) {
       if (!ids.length) return toast("ইউজার নির্বাচন করুন");
       if (bulkSelect.value === "reset_password") {
         return renderBulkResetPasswordModal(ids, loadUsers);
+      }
+      if (bulkSelect.value === "sms_limit") {
+        return renderSmsLimitOverrideModal(ids, loadUsers);
       }
       const label = bulkSelect.options[bulkSelect.selectedIndex].textContent;
       const sure = await confirmModal(`${ids.length} জন ইউজারে "${label}" প্রয়োগ করবেন?`, { title: "নিশ্চিত করুন" });
@@ -155,6 +159,38 @@ function renderBulkResetPasswordModal(ids, onDone) {
       } else {
         toast("পাসওয়ার্ড রিসেট হয়েছে");
       }
+      onDone();
+    } catch (e) { toast(e.message); confirmBtn.disabled = false; }
+  };
+}
+
+// Bulk (or single-user, called with a one-element array) SMS daily limit
+// override - leaving a field blank means "don't change that one", so an
+// admin can bump just the user-initiated limit without touching the
+// system limit, or vice versa, in one shot for many users at once without
+// a full site settings save.
+function renderSmsLimitOverrideModal(ids, onDone) {
+  const userField = h("input", { type: "number", min: "0", placeholder: "অপরিবর্তিত রাখতে খালি রাখুন" });
+  const systemField = h("input", { type: "number", min: "0", placeholder: "অপরিবর্তিত রাখতে খালি রাখুন" });
+  const body = h("div", { class: "stack" }, [
+    h("p", { class: "small muted" }, `${ids.length} জন ইউজারের জন্য প্রযোজ্য হবে। সাইট-ওয়াইড ডিফল্ট সেটিংস পরিবর্তন হবে না।`),
+    h("div", { class: "field" }, [h("label", {}, "ইউজার-উদ্যোগী এসএমএস দৈনিক লিমিট"), userField]),
+    h("div", { class: "field" }, [h("label", {}, "সিস্টেম এসএমএস দৈনিক লিমিট"), systemField]),
+  ]);
+  const confirmBtn = h("button", { class: "btn btn-primary" }, "প্রয়োগ করুন");
+  const cancelBtn = h("button", { class: "btn btn-outline" }, "বাতিল");
+  openModal({ title: "এসএমএস লিমিট পরিবর্তন", body, actions: [cancelBtn, confirmBtn] });
+  cancelBtn.onclick = closeModal;
+  confirmBtn.onclick = async () => {
+    const payload = { ids };
+    if (userField.value !== "") payload.userInitiatedLimit = parseInt(userField.value, 10);
+    if (systemField.value !== "") payload.systemLimit = parseInt(systemField.value, 10);
+    if (payload.userInitiatedLimit === undefined && payload.systemLimit === undefined) return toast("অন্তত একটি ফিল্ড পূরণ করুন");
+    confirmBtn.disabled = true;
+    try {
+      await API.post("/api/admin/sms-limit-override", payload);
+      toast("সংরক্ষণ করা হয়েছে");
+      closeModal();
       onDone();
     } catch (e) { toast(e.message); confirmBtn.disabled = false; }
   };
@@ -220,14 +256,31 @@ async function renderUserImportForm(area, onDone) {
 }
 
 async function renderUserEditForm(area, u, onDone) {
-  area.innerHTML = "";
-  const card = h("div", { class: "card stack" });
-  card.appendChild(h("h3", {}, `এডিট: ${u.mobile}`));
+  const body = h("div", { class: "stack" });
+
+  const mobileField = h("input", { type: "text" }); mobileField.value = u.mobile;
+  body.appendChild(h("div", { class: "field" }, [h("label", {}, "মোবাইল"), mobileField]));
+
+  const usernameField = h("input", { type: "text" }); usernameField.value = u.username_display || "";
+  body.appendChild(h("div", { class: "field" }, [h("label", {}, "ইউজারনেইম"), usernameField]));
+
   const name = h("input", { type: "text" }); name.value = u.name || "";
-  card.appendChild(h("div", { class: "field" }, [h("label", {}, "নাম"), name]));
+  body.appendChild(h("div", { class: "field" }, [h("label", {}, "নাম"), name]));
+
+  const isDonorCb = h("input", { type: "checkbox" }); isDonorCb.checked = !!u.is_donor;
+  body.appendChild(h("div", { class: "checkbox-row" }, [isDonorCb, h("span", { class: "lbl" }, "ডোনার")]));
+
+  let bloodGroup = u.blood_group;
+  const bgWrap = h("div", { style: "display:" + (u.is_donor ? "block" : "none") });
+  bgWrap.appendChild(h("div", { class: "field" }, [h("label", {}, "রক্তের গ্রুপ"), bloodGroupGrid(bloodGroup, (g) => (bloodGroup = g))]));
+  const eligSelect = h("select");
+  [["on", "চালু"], ["snoozed", "স্থগিত"], ["off", "বন্ধ"]].forEach(([v, l]) => eligSelect.appendChild(h("option", { value: v, selected: u.eligibility_status === v ? "" : null }, l)));
+  bgWrap.appendChild(h("div", { class: "field" }, [h("label", {}, "এলিজিবিলিটি (এভেইলেবিলিটি)"), eligSelect]));
+  body.appendChild(bgWrap);
+  isDonorCb.onchange = () => (bgWrap.style.display = isDonorCb.checked ? "block" : "none");
 
   const isAdmin = h("input", { type: "checkbox" }); isAdmin.checked = !!u.is_admin; isAdmin.disabled = !!u.is_root_admin;
-  card.appendChild(h("div", { class: "checkbox-row" }, [isAdmin, h("span", { class: "lbl" }, "এডমিন")]));
+  body.appendChild(h("div", { class: "checkbox-row" }, [isAdmin, h("span", { class: "lbl" }, "এডমিন")]));
 
   const permsWrap = h("div", { style: "display:" + (u.is_admin ? "block" : "none") });
   const { permissions } = await API.get("/api/admin/permissions");
@@ -236,34 +289,41 @@ async function renderUserEditForm(area, u, onDone) {
     permsWrap.appendChild(h("div", { class: "checkbox-row" }, [cb, h("span", { class: "lbl" }, p.label)]));
     return [cb, p.key];
   });
-  card.appendChild(permsWrap);
+  body.appendChild(permsWrap);
   isAdmin.onchange = () => (permsWrap.style.display = isAdmin.checked ? "block" : "none");
 
+  const resetBtn = h("button", { class: "btn btn-outline btn-sm" }, [icon("key-round", "small"), " পাসওয়ার্ড রিসেট"]);
+  const disableBtn = h("button", { class: "btn btn-outline btn-sm" }, u.disabled ? "সক্রিয় করুন" : "নিষ্ক্রিয় করুন");
+  const deleteBtn = h("button", { class: "btn btn-outline btn-sm", style: "color:var(--primary)" }, "ডিলিট");
+  body.appendChild(h("div", { class: "row", style: "flex-wrap:wrap;margin-top:6px" }, [resetBtn, disableBtn, deleteBtn]));
+
   const saveBtn = h("button", { class: "btn btn-primary" }, "সংরক্ষণ করুন");
-  const resetBtn = h("button", { class: "btn btn-outline" }, [icon("key-round", "small"), " পাসওয়ার্ড রিসেট"]);
-  const disableBtn = h("button", { class: "btn btn-outline" }, u.disabled ? "সক্রিয় করুন" : "নিষ্ক্রিয় করুন");
-  const deleteBtn = h("button", { class: "btn btn-danger" }, "ডিলিট");
-  card.appendChild(h("div", { class: "btn-row" }, [saveBtn, resetBtn]));
-  card.appendChild(h("div", { class: "btn-row", style: "margin-top:8px" }, [disableBtn, deleteBtn]));
-  area.appendChild(card);
+  const cancelBtn = h("button", { class: "btn btn-outline" }, "বাতিল");
+  openModal({ title: `এডিট: ${u.mobile}`, body, actions: [cancelBtn, saveBtn] });
+  cancelBtn.onclick = closeModal;
   refreshIcons();
 
   saveBtn.onclick = async () => {
     const perms = permChecks.filter(([cb]) => cb.checked).map(([, key]) => key);
+    const payload = {
+      name: name.value, isAdmin: isAdmin.checked, permissions: perms,
+      isDonor: isDonorCb.checked, mobile: mobileField.value.trim(), username: usernameField.value.trim(),
+    };
+    if (isDonorCb.checked) { payload.bloodGroup = bloodGroup; payload.eligibilityStatus = eligSelect.value; }
     try {
-      await API.put(`/api/admin/users/${u.id}`, { name: name.value, isAdmin: isAdmin.checked, permissions: perms });
-      toast("আপডেট হয়েছে"); area.innerHTML = ""; onDone();
+      await API.put(`/api/admin/users/${u.id}`, payload);
+      toast("আপডেট হয়েছে"); closeModal(); onDone();
     } catch (e) { toast(e.message); }
   };
-  resetBtn.onclick = () => renderBulkResetPasswordModal([u.id], onDone);
+  resetBtn.onclick = () => { closeModal(); renderBulkResetPasswordModal([u.id], onDone); };
   disableBtn.onclick = async () => {
-    try { await API.post("/api/admin/users/bulk", { ids: [u.id], action: u.disabled ? "enable" : "disable" }); toast("আপডেট হয়েছে"); onDone(); }
+    try { await API.post("/api/admin/users/bulk", { ids: [u.id], action: u.disabled ? "enable" : "disable" }); toast("আপডেট হয়েছে"); closeModal(); onDone(); }
     catch (e) { toast(e.message); }
   };
   deleteBtn.onclick = async () => {
     const sure = await confirmModal("নিশ্চিতভাবে ডিলিট করবেন?", { title: "ইউজার ডিলিট" });
     if (!sure) return;
-    try { await API.del(`/api/admin/users/${u.id}`); toast("ডিলিট হয়েছে"); area.innerHTML = ""; onDone(); }
+    try { await API.del(`/api/admin/users/${u.id}`); toast("ডিলিট হয়েছে"); closeModal(); onDone(); }
     catch (e) { toast(e.message); }
   };
 }
@@ -313,36 +373,136 @@ ViewsAdmin.externalSources = async function (view) {
 ViewsAdmin.activityLog = async function (view) {
   const content = adminPage(view, "এক্টিভিটি লগ", "/admin/activity-log");
 
-  const toolbar = h("div", { class: "row", style: "flex-wrap:wrap;margin-bottom:12px" });
+  const toolbar = h("div", { class: "row", style: "flex-wrap:wrap;margin-bottom:12px;gap:8px" });
   const whoField = h("input", { type: "text", placeholder: "কে (নাম/মোবাইল)", style: "flex:1;min-width:140px" });
   const catSelect = h("select");
   [["", "সব ক্যাটাগরি"], ["account", "Account"], ["settings", "Settings"], ["call", "Call"], ["donation", "Donation"], ["admin", "Admin"], ["system", "System"]]
     .forEach(([v, l]) => catSelect.appendChild(h("option", { value: v }, l)));
+  const dateFromField = h("input", { type: "date", title: "শুরুর তারিখ" });
+  const dateToField = h("input", { type: "date", title: "শেষ তারিখ" });
   const filterBtn = h("button", { class: "btn btn-sm btn-outline" }, "ফিল্টার");
   const refreshBtn = h("button", { class: "btn btn-sm btn-primary" }, [icon("refresh-cw", "small")]);
-  toolbar.appendChild(whoField); toolbar.appendChild(catSelect); toolbar.appendChild(filterBtn); toolbar.appendChild(refreshBtn);
+  const purgeBtn = h("button", { class: "btn btn-sm btn-outline", style: "color:var(--primary)" }, "পার্জ");
+  [whoField, catSelect, dateFromField, dateToField, filterBtn, refreshBtn, purgeBtn].forEach((el) => toolbar.appendChild(el));
   content.appendChild(toolbar);
   enterSubmits(whoField, filterBtn);
 
   const listArea = h("div");
   content.appendChild(listArea);
+  const pagerArea = h("div", { class: "row", style: "justify-content:center;gap:10px;margin-top:12px" });
+  content.appendChild(pagerArea);
 
-  async function load() {
+  let currentPage = 1;
+
+  async function load(page = 1) {
+    currentPage = page;
     listArea.innerHTML = "";
     setLoading(listArea);
-    const q = new URLSearchParams({ who: whoField.value.trim(), category: catSelect.value }).toString();
-    const { entries } = await API.get(`/api/admin/activity-log?${q}`);
+    const params = { who: whoField.value.trim(), category: catSelect.value, page: String(page) };
+    if (dateFromField.value) params.dateFrom = dateFromField.value;
+    if (dateToField.value) params.dateTo = dateToField.value;
+    const q = new URLSearchParams(params).toString();
+    const { entries, totalPages, total } = await API.get(`/api/admin/activity-log?${q}`);
     listArea.innerHTML = "";
-    if (!entries.length) { listArea.appendChild(h("p", { class: "muted" }, "কোনো লগ পাওয়া যায়নি")); return; }
-    entries.forEach((e) => listArea.appendChild(h("div", { class: "list-item" }, [
-      h("span", {}, `[${e.category}] ${e.actor_label || "সিস্টেম"}: ${e.action_text}`), h("span", { class: "muted small" }, e.created_at),
+    if (!entries.length) { listArea.appendChild(h("p", { class: "muted" }, "কোনো লগ পাওয়া যায়নি")); pagerArea.innerHTML = ""; return; }
+
+    // Proper table: aligned columns, a header row, and no leaked
+    // "[category]" prefix in the text - category is its own column instead.
+    const table = h("table", { class: "activity-log-table" });
+    table.appendChild(h("thead", {}, h("tr", {}, [
+      h("th", {}, "সময়"), h("th", {}, "কে"), h("th", {}, "ক্যাটাগরি"), h("th", {}, "বিবরণ"),
     ])));
+    const tbody = h("tbody");
+    entries.forEach((e) => {
+      tbody.appendChild(h("tr", {}, [
+        h("td", { class: "small muted" }, bnDateTime(e.created_at)),
+        h("td", {}, e.actor_label || "সিস্টেম"),
+        h("td", {}, h("span", { class: "badge badge-bg" }, e.category)),
+        h("td", {}, e.action_text),
+      ]));
+    });
+    table.appendChild(tbody);
+    listArea.appendChild(table);
+
+    pagerArea.innerHTML = "";
+    if (totalPages > 1) {
+      const prevBtn = h("button", { class: "btn btn-sm btn-outline", disabled: page <= 1 }, "আগের");
+      const pageLabel = h("span", { class: "small muted" }, `${toBnDigits(page)} / ${toBnDigits(totalPages)} (মোট ${toBnDigits(total)})`);
+      const nextBtn = h("button", { class: "btn btn-sm btn-outline", disabled: page >= totalPages }, "পরের");
+      prevBtn.onclick = () => load(page - 1);
+      nextBtn.onclick = () => load(page + 1);
+      pagerArea.appendChild(prevBtn); pagerArea.appendChild(pageLabel); pagerArea.appendChild(nextBtn);
+    }
   }
-  filterBtn.onclick = load;
-  refreshBtn.onclick = load;
-  refreshIcons();
-  await load();
+
+  filterBtn.onclick = () => load(1);
+  refreshBtn.onclick = () => load(currentPage);
+  purgeBtn.onclick = () => openPurgeModal(load, currentPage);
+  await load(1);
 };
+
+function openPurgeModal(reload, currentPage) {
+  const body = h("div", { class: "stack" });
+  const allBtn = h("button", { class: "btn btn-outline", style: "color:var(--primary)" }, "সম্পূর্ণ লগ ডিলিট করুন");
+  const orField = h("input", { type: "number", min: "1", placeholder: "যেমন: ৩০" });
+  const olderBtn = h("button", { class: "btn btn-outline" }, "এর চেয়ে পুরনো এন্ট্রি ডিলিট করুন (দিন)");
+  body.appendChild(h("p", { class: "small muted" }, "এই কাজটি ফিরিয়ে আনা যাবে না।"));
+  body.appendChild(allBtn);
+  body.appendChild(h("div", { class: "field" }, [h("label", {}, "কতদিনের পুরনো এন্ট্রি ডিলিট করবেন?"), orField]));
+  body.appendChild(olderBtn);
+
+  // Auto-purge schedule, shown in the same modal since it's the same
+  // concern - lets the admin set-and-forget instead of manually purging.
+  body.appendChild(h("hr", {}));
+  const autoRow = h("div", { class: "toggle-row" });
+  const autoCb = h("input", { type: "checkbox" });
+  const autoSw = h("label", { class: "switch" }); autoSw.appendChild(autoCb); autoSw.appendChild(h("span", { class: "track" }));
+  autoRow.appendChild(h("div", {}, [h("b", {}, "স্বয়ংক্রিয় পার্জ চালু রাখুন")]));
+  autoRow.appendChild(autoSw);
+  body.appendChild(autoRow);
+  const autoDaysField = h("input", { type: "number", min: "1", placeholder: "৩০" });
+  body.appendChild(h("div", { class: "field" }, [h("label", {}, "প্রতি কতদিন পর পুরনো এন্ট্রি স্বয়ংক্রিয়ভাবে ডিলিট হবে?"), autoDaysField]));
+  const saveAutoBtn = h("button", { class: "btn btn-outline btn-sm" }, "সংরক্ষণ করুন");
+  body.appendChild(saveAutoBtn);
+
+  API.get("/api/admin/activity-log/auto-purge").then((s) => {
+    autoCb.checked = s.enabled;
+    autoDaysField.value = s.olderThanDays;
+  }).catch(() => {});
+
+  saveAutoBtn.onclick = async () => {
+    const days = parseInt(autoDaysField.value, 10);
+    if (!Number.isFinite(days) || days < 1) return toast("সঠিক সংখ্যক দিন দিন");
+    try {
+      await API.put("/api/admin/activity-log/auto-purge", { enabled: autoCb.checked, olderThanDays: days });
+      toast("সংরক্ষণ করা হয়েছে");
+    } catch (e) { toast(e.message); }
+  };
+
+  const cancelBtn = h("button", { class: "btn btn-outline" }, "বাতিল");
+  openModal({ title: "এক্টিভিটি লগ পার্জ", body, actions: [cancelBtn] });
+  cancelBtn.onclick = closeModal;
+
+  allBtn.onclick = async () => {
+    if (!confirm("সম্পূর্ণ এক্টিভিটি লগ ডিলিট করতে চান? এটি ফিরিয়ে আনা যাবে না।")) return;
+    try {
+      await API.post("/api/admin/activity-log/purge", {});
+      toast("লগ পার্জ করা হয়েছে");
+      closeModal();
+      reload(1);
+    } catch (e) { toast(e.message); }
+  };
+  olderBtn.onclick = async () => {
+    const days = parseInt(orField.value, 10);
+    if (!Number.isFinite(days) || days < 1) return toast("সঠিক সংখ্যক দিন দিন");
+    try {
+      await API.post("/api/admin/activity-log/purge", { olderThanDays: days });
+      toast("পার্জ সম্পন্ন হয়েছে");
+      closeModal();
+      reload(currentPage);
+    } catch (e) { toast(e.message); }
+  };
+}
 
 // -------------------------------------------------------------- SMS SETTINGS
 ViewsAdmin.smsSettings = async function (view) {
@@ -363,6 +523,17 @@ ViewsAdmin.smsSettings = async function (view) {
   testModeRow.appendChild(sw);
   card.appendChild(testModeRow);
   content.appendChild(card);
+
+  // ---- daily SMS limits ----
+  const limitCard = h("div", { class: "card stack" });
+  limitCard.appendChild(h("h3", {}, "দৈনিক এসএমএস লিমিট"));
+  const userLimitField = h("input", { type: "number", min: "0" }); userLimitField.value = s.sms_daily_limit_user_initiated || "3";
+  limitCard.appendChild(h("div", { class: "field" }, [h("label", {}, "ইউজার-উদ্যোগী এসএমএস (দৈনিক, প্রতি নাম্বার)"), userLimitField]));
+  const systemLimitField = h("input", { type: "number", min: "0" }); systemLimitField.value = s.sms_daily_limit_system || "3";
+  limitCard.appendChild(h("div", { class: "field" }, [h("label", {}, "সিস্টেম এসএমএস (দৈনিক, প্রতি নাম্বার)"), systemLimitField]));
+  const overLimitMsgField = h("textarea", {}); overLimitMsgField.value = s.sms_over_limit_otp_message || "";
+  limitCard.appendChild(h("div", { class: "field" }, [h("label", {}, "লিমিট শেষ হলে OTP পেজে যে মেসেজ দেখানো হবে"), overLimitMsgField]));
+  content.appendChild(limitCard);
 
   // ---- per-type on/off toggles ----
   const toggleCard = h("div", { class: "card stack" });
@@ -409,7 +580,11 @@ ViewsAdmin.smsSettings = async function (view) {
   content.appendChild(saveBtn);
 
   saveBtn.onclick = async () => {
-    const payload = { greensms_api_key: apiKeyField.value, manual_otp: manualOtp.value, otp_test_mode: testModeCb.checked };
+    const payload = {
+      greensms_api_key: apiKeyField.value, manual_otp: manualOtp.value, otp_test_mode: testModeCb.checked,
+      sms_daily_limit_user_initiated: userLimitField.value, sms_daily_limit_system: systemLimitField.value,
+      sms_over_limit_otp_message: overLimitMsgField.value,
+    };
     Object.entries(fields).forEach(([k, f]) => (payload[k] = f.value));
     Object.entries(toggleChecks).forEach(([k, cb]) => (payload[k] = cb.checked));
     try { await API.put("/api/admin/sms-settings", payload); toast("সংরক্ষণ করা হয়েছে"); }
@@ -449,6 +624,47 @@ ViewsAdmin.smsSettings = async function (view) {
 // ---------------------------------------------------------------- SITE APIS
 // Only actual third-party credentials live here now - /seek system tuning
 // (call limits, lock time, OTP-for-number-change) moved to Site Settings.
+ViewsAdmin.smsAnalytics = async function (view) {
+  const content = adminPage(view, "এসএমএস এনালিটিক্স", "/admin/sms-analytics");
+  const resetBtn = h("button", { class: "btn btn-outline btn-sm", style: "color:var(--primary);margin-bottom:12px" }, "রেকর্ড রিসেট করুন");
+  content.appendChild(resetBtn);
+
+  const { current, history } = await API.get("/api/admin/sms-analytics");
+
+  const currentCard = h("div", { class: "card stack" });
+  currentCard.appendChild(h("h3", {}, "বর্তমান সর্বোচ্চ দৈনিক SMS (এই মাসে)"));
+  if (!current.length) {
+    currentCard.appendChild(h("p", { class: "muted" }, "এখনো কোনো রেকর্ড নেই"));
+  } else {
+    current.forEach((u) => currentCard.appendChild(h("div", { class: "list-item" }, [
+      h("span", {}, `${u.name || u.mobile} (${u.mobile})`),
+      h("span", { class: "muted" }, `${toBnDigits(u.sms_highest_daily_count)} টি এসএমএস — ${bnDate(u.sms_highest_daily_date)}`),
+    ])));
+  }
+  content.appendChild(currentCard);
+
+  const historyCard = h("div", { class: "card stack" });
+  historyCard.appendChild(h("h3", {}, "পূর্ববর্তী সর্বোচ্চ দৈনিক SMS রিসিভারস"));
+  if (!history.length) {
+    historyCard.appendChild(h("p", { class: "muted" }, "কোনো পূর্ববর্তী রেকর্ড নেই"));
+  } else {
+    history.forEach((h_) => historyCard.appendChild(h("div", { class: "list-item" }, [
+      h("span", {}, h_.mobile),
+      h("span", { class: "muted" }, `${toBnDigits(h_.count)} টি — ${bnDate(h_.record_date)} (রিসেট: ${bnDate(h_.reset_at)})`),
+    ])));
+  }
+  content.appendChild(historyCard);
+
+  resetBtn.onclick = async () => {
+    if (!confirm("সর্বোচ্চ দৈনিক SMS রেকর্ড রিসেট করতে চান? বর্তমান রেকর্ডগুলো পূর্ববর্তী তালিকায় সংরক্ষিত হবে।")) return;
+    try {
+      await API.post("/api/admin/sms-analytics/reset", {});
+      toast("রিসেট করা হয়েছে");
+      ViewsAdmin.smsAnalytics(view);
+    } catch (e) { toast(e.message); }
+  };
+};
+
 ViewsAdmin.siteApis = async function (view) {
   const content = adminPage(view, "সাইট এপিআই", "/admin/site-apis");
   const s = await API.get("/api/admin/site-apis");
@@ -561,7 +777,18 @@ ViewsAdmin.siteSettings = async function (view) {
   seekCard.appendChild(h("div", { class: "field" }, [h("label", {}, "কল লিমিট (মিনিট)"), callLimitMinutes]));
   seekCard.appendChild(h("div", { class: "field" }, [h("label", {}, "ডোনার লক সময় (মিনিট)"), lockMinutes]));
   seekCard.appendChild(h("div", { class: "field" }, [h("label", {}, "কল ষ্ট্যাটাস টাইমার (সেকেন্ড)"), timerSeconds]));
+  const maskDigits = h("input", { type: "number", min: "2", max: "8" }); maskDigits.value = s.mask_visible_digits || "4";
+  seekCard.appendChild(h("div", { class: "field" }, [h("label", {}, "মোবাইল নাম্বার মাস্কে কতটি সংখ্যা দেখানো হবে (শুরুতে)"), maskDigits]));
   content.appendChild(seekCard);
+
+  // ---- reserved usernames ----
+  const reservedCard = h("div", { class: "card stack" });
+  reservedCard.appendChild(h("h3", {}, "রিজার্ভড ইউজারনেইম"));
+  reservedCard.appendChild(h("p", { class: "small muted" }, "কমা দিয়ে আলাদা করুন। সাইটের গুরুত্বপূর্ণ পাথ (যেমন seek, admin) সবসময় রিজার্ভড থাকে - এখানে শুধু অতিরিক্ত নাম যোগ করুন।"));
+  const reservedField = h("input", { type: "text", placeholder: "যেমনঃ support, help, official" });
+  reservedField.value = s.reserved_usernames || "";
+  reservedCard.appendChild(h("div", { class: "field" }, reservedField));
+  content.appendChild(reservedCard);
 
   // ---- default avatars ----
   const avatarCard = h("div", { class: "card stack" });
@@ -583,7 +810,8 @@ ViewsAdmin.siteSettings = async function (view) {
       eligibility_wait_months: waitMonths.value, self_deletion_enabled: delCb.checked, session_days: sessionDays.value,
       show_seek_option: seekCb.checked, show_join_option: joinCb.checked, show_logout_button: logoutCb.checked, profile_share_base_url: shareBaseField.value,
       otp_required_for_number_change: otpCb.checked, call_limit_count: callLimitCount.value, call_limit_minutes: callLimitMinutes.value,
-      donor_lock_minutes: lockMinutes.value, call_status_timer_seconds: timerSeconds.value,
+      donor_lock_minutes: lockMinutes.value, call_status_timer_seconds: timerSeconds.value, mask_visible_digits: maskDigits.value,
+      reserved_usernames: reservedField.value,
       default_avatars_json: JSON.stringify(avatarList),
     };
     Object.entries(fields).forEach(([k, f]) => (payload[k] = f.value));

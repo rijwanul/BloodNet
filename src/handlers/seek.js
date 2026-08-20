@@ -1,7 +1,7 @@
-import { ok, err, readJson, isValidBloodGroup, nowIso, maskMobile } from "../lib/util.js";
+import { ok, err, readJson, isValidBloodGroup, nowIso, maskMobile, BLOOD_GROUPS } from "../lib/util.js";
 import { getSettings, settingInt } from "../lib/settings.js";
 import { getCurrentUser, publicUserFields } from "../lib/authctx.js";
-import { getLock, setLock, clearLock, checkAndBumpRateLimit } from "../lib/kvstore.js";
+import { getLock, setLock, clearLock, findLockForDonor, checkAndBumpRateLimit } from "../lib/kvstore.js";
 import { logActivity } from "../lib/activity.js";
 import { sendNotificationSms, fillTemplate } from "../lib/sms.js";
 import { statusLabel, CANNOT_REASON_LABELS_BN as CANNOT_REASON_LABELS } from "../lib/callLabels.js";
@@ -35,14 +35,18 @@ export async function handleSeekCount(request, env) {
   const url = new URL(request.url);
   const bloodGroup = url.searchParams.get("bloodGroup");
   if (!isValidBloodGroup(bloodGroup)) return err("সঠিক রক্তের গ্রুপ দিন");
+  // A donor searching for blood of their own group should not see
+  // themselves counted as an eligible donor for their own request - they
+  // are the requester in this moment, not an eligible candidate for it.
+  const requester = await getCurrentUser(request, env);
   const row = await env.DB
-    .prepare("SELECT COUNT(*) as c FROM users WHERE is_donor = 1 AND blood_group = ? AND eligibility_status = 'on' AND deleted = 0")
-    .bind(bloodGroup)
+    .prepare("SELECT COUNT(*) as c FROM users WHERE is_donor = 1 AND blood_group = ? AND eligibility_status = 'on' AND deleted = 0 AND id != ?")
+    .bind(bloodGroup, requester ? requester.id : 0)
     .first();
   return ok({ count: row.c });
 }
 
-function donorPublicShape(d) {
+function donorPublicShape(d, settings) {
   const vis = safeJson(d.visibility_json) || {};
   // Inside the active /seek flow the requester is by definition a logged-in
   // patient actively being matched to this donor, so every visibility tier
@@ -59,7 +63,7 @@ function donorPublicShape(d) {
     addressSummary: isVisible("address_summary", "patients_only") ? d.address_summary : null,
     lastDonationDate: isVisible("last_donation_date", "patients_only") ? d.last_donation_date : null,
     note: d.donor_note || null,
-    mobileMasked: maskMobile(d.mobile),
+    mobileMasked: maskMobile(d.mobile, settings),
   };
 }
 
@@ -69,6 +73,15 @@ function safeJson(s) {
   } catch {
     return {};
   }
+}
+
+// True once the number has actually been revealed for this requester+donor
+// pair (a 'pending' or later-status calls row exists) - used to tell the
+// frontend to skip straight past the reveal+countdown UI on a page refresh
+// instead of restarting the 20-second timer from zero every time.
+async function hasCallStarted(db, requesterId, donorId) {
+  const row = await db.prepare("SELECT id FROM calls WHERE requester_id = ? AND donor_id = ? ORDER BY created_at DESC LIMIT 1").bind(requesterId, donorId).first();
+  return !!row;
 }
 
 export async function handleSeekLock(request, env) {
@@ -85,16 +98,21 @@ export async function handleSeekLock(request, env) {
   const limitMinutes = settingInt(settings, "call_limit_minutes", 15);
   await pruneOldExclusions(env.DB, requester.id, limitMinutes);
 
-  // Re-serve the same donor if this requester already has an active lock -
-  // lets a page refresh return to the same donor instead of re-rolling.
-  const existingLock = await getLock(env.KV, requester.id);
+  // Re-serve the same donor if this requester already has an active lock
+  // FOR THIS BLOOD GROUP specifically - lets a page refresh return to the
+  // same donor instead of re-rolling, without leaking a stale lock from a
+  // previously (or simultaneously) browsed different blood group. Each
+  // blood group gets its own independent lock, so a requester who starts
+  // an O+ search, backs out, and starts an A+ search gets a genuinely fresh
+  // A+ match instead of being stuck with whatever donor O+ had locked.
+  const existingLock = await getLock(env.KV, requester.id, bloodGroup);
   if (existingLock) {
     const donor = await env.DB
       .prepare("SELECT u.*, (SELECT COUNT(*) FROM donations WHERE user_id = u.id) as explicit_donation_count FROM users u WHERE id = ? AND deleted = 0")
       .bind(existingLock.donorId)
       .first();
-    if (donor) return ok({ donor: donorPublicShape(donor), bloodGroup: existingLock.bloodGroup || bloodGroup });
-    await clearLock(env.KV, requester.id);
+    if (donor) return ok({ donor: donorPublicShape(donor, settings), bloodGroup, alreadyCalled: await hasCallStarted(env.DB, requester.id, existingLock.donorId) });
+    await clearLock(env.KV, requester.id, bloodGroup);
   }
 
   const limitCount = settingInt(settings, "call_limit_count", 20);
@@ -109,7 +127,9 @@ export async function handleSeekLock(request, env) {
 
   // Never re-serve a donor already shown to THIS requester in the current
   // session, even if they've since cycled back to eligible/top-of-queue -
-  // other requesters can still be shown them.
+  // other requesters can still be shown them. A requester also never gets
+  // matched to themselves, even if they happen to be an eligible donor of
+  // the exact group they're searching for.
   const donor = await env.DB
     .prepare(
       `SELECT u.*, (SELECT COUNT(*) FROM donations WHERE user_id = u.id) as explicit_donation_count
@@ -117,11 +137,11 @@ export async function handleSeekLock(request, env) {
        WHERE is_donor = 1 AND blood_group = ? AND eligibility_status = 'on' AND deleted = 0
          AND id != ?
          AND (locked_by_requester_id IS NULL OR lock_expires_at <= datetime('now'))
-         AND id NOT IN (SELECT donor_id FROM seek_exclusions WHERE requester_id = ?)
+         AND id NOT IN (SELECT donor_id FROM seek_exclusions WHERE requester_id = ? AND blood_group = ?)
        ORDER BY call_sort_rank ASC, total_calls_received ASC, id ASC
        LIMIT 1`
     )
-    .bind(bloodGroup, requester.id, requester.id)
+    .bind(bloodGroup, requester.id, requester.id, bloodGroup)
     .first();
 
   if (!donor) {
@@ -133,7 +153,7 @@ export async function handleSeekLock(request, env) {
     // become eligible to be shown again. Clearing the exclusions here means
     // the NEXT /api/seek/lock call for this requester+group starts fresh,
     // rather than waiting on the unrelated call-limit rate-window to expire.
-    await env.DB.prepare("DELETE FROM seek_exclusions WHERE requester_id = ? AND donor_id IN (SELECT id FROM users WHERE blood_group = ?)").bind(requester.id, bloodGroup).run();
+    await env.DB.prepare("DELETE FROM seek_exclusions WHERE requester_id = ? AND blood_group = ?").bind(requester.id, bloodGroup).run();
     const { results: sources } = await env.DB.prepare("SELECT name, url FROM external_sources ORDER BY sort_order ASC").all();
     return ok({ donor: null, externalSources: sources });
   }
@@ -146,11 +166,11 @@ export async function handleSeekLock(request, env) {
     .run();
   await setLock(env.KV, requester.id, donor.id, lockMinutes, bloodGroup);
   await env.DB
-    .prepare("INSERT OR IGNORE INTO seek_exclusions (requester_id, donor_id, created_at) VALUES (?, ?, ?)")
-    .bind(requester.id, donor.id, nowIso())
+    .prepare("INSERT OR IGNORE INTO seek_exclusions (requester_id, donor_id, blood_group, created_at) VALUES (?, ?, ?, ?)")
+    .bind(requester.id, donor.id, bloodGroup, nowIso())
     .run();
 
-  return ok({ donor: donorPublicShape(donor), bloodGroup });
+  return ok({ donor: donorPublicShape(donor, settings), bloodGroup });
 }
 
 
@@ -158,52 +178,80 @@ export async function handleSeekLock(request, env) {
 // (e.g. tapped "রক্ত দিতে পারবে না" by mistake). This lets the requester
 // resubmit a different status for the SAME call attempt instead of it
 // being permanent the moment one status is picked.
+//
+// Two ways in:
+//  - donorId (the normal /seek flow) - resolves against whichever call row
+//    is tied to a currently-LIVE lock, as before.
+//  - callId (the site-wide /calls history page's "আপডেট করুন" button on an
+//    old pending entry) - directly targets that exact row, ownership-
+//    checked, with no lock requirement at all, since by the time someone
+//    is updating history from that page the seek session is long over.
 export async function handleSeekCallStatus(request, env) {
   const requester = await getCurrentUser(request, env);
-  if (!requester) return err("লগইন প্রয়োজন", 401);
+  if (!requester) return err("লগইন প্রয়োজন", 401);
   const body = await readJson(request);
-  const { donorId, status, cannotReason } = body;
-  const donor = await env.DB.prepare("SELECT * FROM users WHERE id = ? AND deleted = 0").bind(donorId).first();
-  if (!donor) return err("ডোনার পাওয়া যায়নি");
+  const { donorId, callId, status, cannotReason } = body;
 
+  if (callId) {
+    const row = await env.DB.prepare("SELECT id, donor_id, status FROM calls WHERE id = ? AND requester_id = ?").bind(callId, requester.id).first();
+    if (!row) return err("এন্ট্রি পাওয়া যায়নি অথবা আপনার নয়", 404);
+    return applyCallStatus(env, requester, row.donor_id, row.id, row.status !== "pending", status, cannotReason, null, false);
+  }
+
+  const donor = await env.DB.prepare("SELECT * FROM users WHERE id = ? AND deleted = 0").bind(donorId).first();
+  if (!donor) return err("ডোনার পাওয়া যায়নি");
+
+  // Whether this is "the same call attempt" (update in place, allows the
+  // "ভুল হয়েছে?" correction) vs "a new call attempt on a returning session"
+  // (insert a fresh row, so the same donor can accumulate multiple distinct
+  // call statuses over time) hinges on whether requester+donor currently
+  // have a LIVE lock - not merely whether any calls row exists between them
+  // at all. A requester who completed a session (saw "no more donors",
+  // clicked আবার শুরু করুন, etc) and later calls the SAME donor again via a
+  // brand new session has no active lock at that point, so this correctly
+  // creates a new call record instead of overwriting the earlier one.
+  const lock = await findLockForDonor(env.KV, requester.id, donor.id, BLOOD_GROUPS);
+  const existingCall = lock
+    ? await env.DB
+        .prepare("SELECT id, status FROM calls WHERE requester_id = ? AND donor_id = ? ORDER BY created_at DESC LIMIT 1")
+        .bind(requester.id, donor.id)
+        .first()
+    : null;
+
+  if (existingCall) {
+    return applyCallStatus(env, requester, donor.id, existingCall.id, existingCall.status !== "pending", status, cannotReason, lock, false);
+  }
+
+  // No live-session call row to update - either genuinely the first call
+  // to this donor, or a new session's call to a donor already called in
+  // an earlier, now-finished session. Either way this is a fresh row.
+  const ins = await env.DB
+    .prepare("INSERT INTO calls (requester_id, donor_id, blood_group, status, cannot_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(requester.id, donor.id, donor.blood_group, status, cannotReason || null, nowIso(), nowIso())
+    .run();
+  await env.DB.prepare("UPDATE users SET total_calls_made = total_calls_made + 1 WHERE id = ?").bind(requester.id).run();
+  await env.DB.prepare("UPDATE users SET total_calls_received = total_calls_received + 1 WHERE id = ?").bind(donor.id).run();
+  return applyCallStatus(env, requester, donor.id, ins.meta.last_row_id, false, status, cannotReason, lock, true);
+}
+
+// Shared tail end: applies the eligibility side effects, sends the
+// notification SMS, releases any lock, and logs the activity entry.
+// skipRowWrite true means the caller already inserted the row itself (the
+// brand-new-call path above) so this only needs to act on side effects,
+// never write status again here; otherwise this UPDATEs the given row.
+async function applyCallStatus(env, requester, donorId, callRowId, isCorrection, status, cannotReason, lock, skipRowWrite) {
+  const donor = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(donorId).first();
   const settings = await getSettings(env.DB);
   const waitMonths = settingInt(settings, "eligibility_wait_months", 3);
 
-  // A "pending" row already exists for this call attempt (created the
-  // moment the number was revealed in handleSeekDonorNumber) in the normal
-  // flow, so this is virtually always an UPDATE rather than an INSERT.
-  // isCorrection (shown as "(সংশোধিত)" in the activity log and skips the
-  // donors_managed_count bump below) means specifically "the requester
-  // already submitted a REAL status and is now resubmitting a different
-  // one" via "ভুল হয়েছে?" - not merely "a pending placeholder row existed".
-  const existingCall = await env.DB
-    .prepare("SELECT id, status FROM calls WHERE requester_id = ? AND donor_id = ? ORDER BY created_at DESC LIMIT 1")
-    .bind(requester.id, donor.id)
-    .first();
-  const lock = await getLock(env.KV, requester.id);
-  const hasExistingRow = existingCall && lock && lock.donorId === donor.id;
-  const isCorrection = hasExistingRow && existingCall.status !== "pending";
-
-  if (hasExistingRow) {
+  if (!skipRowWrite) {
     await env.DB
       .prepare("UPDATE calls SET status = ?, cannot_reason = ?, updated_at = ? WHERE id = ?")
-      .bind(status, cannotReason || null, nowIso(), existingCall.id)
+      .bind(status, cannotReason || null, nowIso(), callRowId)
       .run();
-  } else {
-    // Fallback path for a call row that somehow doesn't exist yet (e.g. an
-    // older in-flight session from before this change) - keeps the old
-    // insert-plus-counter-bump behaviour so nothing breaks mid-rollout.
-    await env.DB
-      .prepare(
-        "INSERT INTO calls (requester_id, donor_id, blood_group, status, cannot_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-      )
-      .bind(requester.id, donor.id, donor.blood_group, status, cannotReason || null, nowIso(), nowIso())
-      .run();
-    await env.DB.prepare("UPDATE users SET total_calls_made = total_calls_made + 1 WHERE id = ?").bind(requester.id).run();
-    await env.DB.prepare("UPDATE users SET total_calls_received = total_calls_received + 1 WHERE id = ?").bind(donor.id).run();
   }
 
-  const noteForDonor = `আপনাকে ${maskMobile(requester.mobile)} কল করেছিলো। ষ্ট্যাটাস: ${statusLabel(status, cannotReason)}`;
+  const noteForDonor = `আপনাকে ${maskMobile(requester.mobile, settings)} কল করেছিলো। ষ্ট্যাটাস: ${statusLabel(status, cannotReason)}`;
   let eligibilityChanged = false;
 
   if (status === "no_answer" || status === "not_picked_up") {
@@ -239,18 +287,18 @@ export async function handleSeekCallStatus(request, env) {
     eligibilityChanged = true;
   }
 
-  // These four operations don't depend on each other's results, so they run
+  // These operations don't depend on each other's results, so they run
   // concurrently instead of one-after-another - this was the main source of
   // the noticeable delay between tapping a status button and seeing the
-  // "ষ্ট্যাটাস সংরক্ষণ করা হয়েছে" confirmation, since each round-trip to
+  // "ষ্ট্যাটাস সংরক্ষণ করা হয়েছে" confirmation, since each round-trip to
   // D1/KV/the SMS provider was previously awaited in sequence.
   await Promise.all([
     eligibilityChanged && settings.sms_enabled_eligibility_change_by_call !== "0"
-      ? sendNotificationSms(env.DB, settings, donor.mobile, fillTemplate(settings.sms_eligibility_change_by_call, { status: statusLabel(status, cannotReason) }), "eligibility_change_by_call")
+      ? sendNotificationSms(env.DB, settings, donor.mobile, fillTemplate(settings.sms_eligibility_change_by_call, { status: statusLabel(status, cannotReason) }, settings), "eligibility_change_by_call")
       : Promise.resolve(),
     // Release the lock only for terminal outcomes; no_answer/not_picked_up frees it too (requester should move on).
     env.DB.prepare("UPDATE users SET locked_by_requester_id = NULL, lock_expires_at = NULL WHERE id = ?").bind(donor.id).run(),
-    clearLock(env.KV, requester.id),
+    lock ? clearLock(env.KV, requester.id, lock.bloodGroup) : Promise.resolve(),
     logActivity(env.DB, {
       actorUser: requester,
       category: "call",
@@ -266,11 +314,16 @@ export async function handleSeekDonorNumber(request, env) {
   if (!requester) return err("লগইন প্রয়োজন", 401);
   const url = new URL(request.url);
   const donorId = parseInt(url.searchParams.get("donorId"), 10);
+  const bloodGroup = url.searchParams.get("bloodGroup");
   if (!donorId) return err("সঠিক ডোনার আইডি দিন");
 
   // Only reveal the real number if this donor is actually currently locked
   // to this requester - prevents scraping numbers by guessing donor ids.
-  const lock = await getLock(env.KV, requester.id);
+  // Checks the specific blood-group lock the frontend is currently on
+  // first (cheap, single KV read); falls back to scanning all groups only
+  // if that's missing, so an older client that hasn't sent bloodGroup yet
+  // still works during rollout.
+  const lock = (bloodGroup && (await getLock(env.KV, requester.id, bloodGroup))) || (await findLockForDonor(env.KV, requester.id, donorId, BLOOD_GROUPS));
   if (!lock || lock.donorId !== donorId) {
     return err("এই ডোনারের সাথে আপনার কোনো সক্রিয় লক নেই", 403);
   }
@@ -302,20 +355,28 @@ export async function handleSeekDonorNumber(request, env) {
 }
 
 // Lets the /seek page restore exactly where a logged-in requester left off
-// on refresh: if they have an active donor lock, return that donor
-// (identical shape to /api/seek/lock) plus the blood group it was for.
+// on refresh: if they have an active donor lock FOR THE GIVEN BLOOD GROUP,
+// return that donor (identical shape to /api/seek/lock). Requires
+// bloodGroup now since locks are scoped per group - without knowing which
+// group the frontend is currently showing, there could be several
+// simultaneously-active locks (one per group) and no way to pick the
+// right one.
 export async function handleSeekState(request, env) {
   const requester = await getCurrentUser(request, env);
   if (!requester) return ok({ active: false });
+  const url = new URL(request.url);
+  const bloodGroup = url.searchParams.get("bloodGroup");
+  if (!isValidBloodGroup(bloodGroup)) return ok({ active: false });
   await releaseExpiredLocks(env.DB);
-  const lock = await getLock(env.KV, requester.id);
+  const lock = await getLock(env.KV, requester.id, bloodGroup);
   if (!lock) return ok({ active: false });
+  const settings = await getSettings(env.DB);
   const donor = await env.DB
     .prepare("SELECT u.*, (SELECT COUNT(*) FROM donations WHERE user_id = u.id) as explicit_donation_count FROM users u WHERE id = ? AND deleted = 0")
     .bind(lock.donorId)
     .first();
   if (!donor) return ok({ active: false });
-  return ok({ active: true, donor: donorPublicShape(donor), bloodGroup: lock.bloodGroup || null, lockExpiresAt: lock.expiresAt || null });
+  return ok({ active: true, donor: donorPublicShape(donor, settings), bloodGroup, lockExpiresAt: lock.expiresAt || null, alreadyCalled: await hasCallStarted(env.DB, requester.id, lock.donorId) });
 }
 
 export async function handleExternalSources(request, env) {

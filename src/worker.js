@@ -5,7 +5,7 @@ import * as donor from "./handlers/donor.js";
 import * as profile from "./handlers/profile.js";
 import * as calls from "./handlers/calls.js";
 import * as admin from "./handlers/admin.js";
-import { runDonationReminderSweep } from "./lib/scheduled.js";
+import { runDonationReminderSweep, runActivityLogAutoPurge, runSmsDailyReset } from "./lib/scheduled.js";
 
 export default {
   async fetch(request, env, ctx) {
@@ -34,6 +34,8 @@ export default {
   // configurable reminder SMS (see lib/scheduled.js).
   async scheduled(controller, env, ctx) {
     ctx.waitUntil(runDonationReminderSweep(env));
+    ctx.waitUntil(runActivityLogAutoPurge(env));
+    ctx.waitUntil(runSmsDailyReset(env));
   },
 };
 
@@ -61,6 +63,7 @@ async function routeApi(request, env, path) {
 
   // ---- DONOR self-service (আমার অবস্থা) ----
   if (path === "/api/donor/status" && method === "GET") return donor.handleDonorStatus(request, env);
+  if (path === "/api/donor/dismiss-eligibility-note" && method === "POST") return donor.handleDismissEligibilityNote(request, env);
   if (path === "/api/donor/eligibility" && method === "POST") return donor.handleDonorEligibility(request, env);
   if (path === "/api/donor/dismiss-donation-prompt" && method === "POST") return donor.handleDonorDismissDonationPrompt(request, env);
   if (path === "/api/donor/mode-off" && method === "POST") return donor.handleDonorModeOff(request, env);
@@ -79,11 +82,14 @@ async function routeApi(request, env, path) {
   if (path === "/api/profile/visibility" && method === "PUT") return profile.handleProfileVisibility(request, env);
   if (path === "/api/profile/donations" && method === "GET") return profile.handleDonationsList(request, env);
   if (path === "/api/profile/donations" && method === "POST") return profile.handleDonationsAdd(request, env);
+  if (seg[2] === "donations" && seg[3] && method === "PUT") return profile.handleDonationEdit(request, env, seg[3]);
+  if (seg[2] === "donations" && seg[3] && method === "DELETE") return profile.handleDonationDelete(request, env, seg[3]);
   if (path === "/api/profile/delete" && method === "POST") return profile.handleProfileDelete(request, env);
   if (seg[1] === "u" && seg[2] && method === "GET") return profile.handlePublicProfile(request, env, decodeURIComponent(seg[2]));
 
   // ---- CALLS ----
   if (path === "/api/calls/history" && method === "GET") return calls.handleCallHistory(request, env);
+  if (path === "/api/calls/received-summary" && method === "GET") return calls.handleReceivedCallsSummary(request, env);
 
   // ---- PUBLIC SETTINGS (site branding, used by every page) ----
   if (path === "/api/settings/public" && method === "GET") return admin.handlePublicSettings(request, env);
@@ -121,6 +127,12 @@ async function routeApi(request, env, path) {
   if (seg[2] === "external-sources" && seg[3] && method === "DELETE") return admin.handleExtSourceDelete(request, env, seg[3]);
 
   if (path === "/api/admin/activity-log" && method === "GET") return admin.handleActivityLog(request, env);
+  if (path === "/api/admin/activity-log/purge" && method === "POST") return admin.handleActivityLogPurge(request, env);
+  if (path === "/api/admin/activity-log/auto-purge" && method === "GET") return admin.handleActivityLogPurgeScheduleGet(request, env);
+  if (path === "/api/admin/activity-log/auto-purge" && method === "PUT") return admin.handleActivityLogPurgeScheduleUpdate(request, env);
+  if (path === "/api/admin/sms-analytics" && method === "GET") return admin.handleSmsAnalyticsGet(request, env);
+  if (path === "/api/admin/sms-analytics/reset" && method === "POST") return admin.handleSmsAnalyticsReset(request, env);
+  if (path === "/api/admin/sms-limit-override" && method === "POST") return admin.handleSmsLimitOverride(request, env);
 
   // Public locations list is also used outside admin (signup forms etc.)
   if (path === "/api/locations" && method === "GET") return admin.handleLocationsList(request, env);

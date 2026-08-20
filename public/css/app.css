@@ -54,6 +54,15 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 
 /* ---------- top bar ---------- */
 .topbar { display: flex; align-items: center; gap: 10px; padding: 14px 18px; position: sticky; top: 0; background: rgba(250,248,246,0.92); backdrop-filter: blur(6px); z-index: 20; border-bottom: 1px solid var(--line); }
+@media (min-width: 900px) {
+  /* Matches .bottom-nav's switch to fixed positioning below - both bars
+     are fixed at a known stacked height on desktop instead of relying on
+     two separately-stacked sticky elements, which is the combination that
+     proved unreliable across browsers. Centered/width-matched to #app's
+     max-width column (not left:0;right:0 spanning the full viewport)
+     since #app itself is a centered column on desktop. */
+  .topbar { position: fixed; top: 0; left: 50%; transform: translateX(-50%); width: 100%; max-width: 720px; z-index: 21; }
+}
 .topbar__logo { display: flex; align-items: center; gap: 8px; font-family: var(--font-bn); font-weight: 700; font-size: 1.15rem; color: var(--primary-dark); }
 .topbar__logo img { height: 28px; width: 28px; border-radius: 7px; object-fit: cover; }
 .topbar__spacer { flex: 1; }
@@ -106,6 +115,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); }
 textarea { resize: vertical; min-height: 80px; }
 .field { margin-bottom: 14px; }
 .field-hint { font-size: 0.8rem; color: var(--ink-soft); margin-top: 4px; }
+.field-hint--ok { color: var(--accent); }
 .field-error { font-size: 0.8rem; color: var(--danger); margin-top: 4px; }
 .toggle-row { display: flex; align-items: center; justify-content: space-between; }
 .switch { position: relative; width: 52px; height: 30px; flex-shrink: 0; }
@@ -121,6 +131,12 @@ textarea { resize: vertical; min-height: 80px; }
 .badge-on { background: var(--accent-tint); color: var(--accent); }
 .badge-snoozed { background: var(--warn-tint); color: var(--warn); }
 .badge-off { background: var(--surface-2); color: var(--ink-soft); }
+/* Activity log table: aligned columns, readable on both mobile (horizontal
+   scroll) and desktop. */
+.activity-log-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+.activity-log-table th, .activity-log-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.activity-log-table th { font-weight: 700; color: var(--ink-soft); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; }
+.activity-log-table tr:last-child td { border-bottom: none; }
 .choice-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .choice-grid button { padding: 12px 4px; border-radius: var(--radius-sm); border: 1.5px solid var(--line); background: var(--surface); font-weight: 700; cursor: pointer; }
 .choice-grid button.selected, .choice-grid button:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-tint); }
@@ -155,6 +171,15 @@ textarea { resize: vertical; min-height: 80px; }
 /* ---------- lists ---------- */
 .list-item { display: flex; justify-content: space-between; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .list-item:last-child { border-bottom: none; }
+.list-item__actions { display: flex; gap: 2px; flex-shrink: 0; }
+/* Call-history rows: text line, then a small timestamp line below it,
+   rather than the default left/right single-line layout. */
+.list-item--stacked { display: block; }
+.list-item--stacked > div:first-child { margin-bottom: 2px; }
+/* Public profile tab strip (tab view) */
+.profile-tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--line); padding-bottom: 0; }
+.profile-tabs__btn { border: none; background: transparent; padding: 10px 14px; font-size: 0.88rem; font-weight: 600; color: var(--ink-soft); cursor: pointer; white-space: nowrap; border-bottom: 2px solid transparent; }
+.profile-tabs__btn.is-active { color: var(--primary); border-bottom-color: var(--primary); }
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); }
 th { color: var(--ink-soft); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
@@ -224,16 +249,24 @@ th { color: var(--ink-soft); font-weight: 600; font-size: 0.8rem; text-transform
 
 /* On desktop the same nav becomes a second horizontal bar docked under the
    topbar instead of disappearing - people still need a way to reach রক্ত
-   দরকার / প্রোফাইল / কল হিষ্ট্রি / সেটিংস without it. */
+   দরকার / প্রোফাইল / কল হিষ্ট্রি / সেটিংস without it.
+   Uses position: fixed (not sticky) - sticky's "stuck" state depends on
+   the nearest scrolling ancestor's containing-block rules, which proved
+   unreliable in practice (reported as "not sticky" on the profile page in
+   particular); fixed positioning anchored under the topbar's fixed height
+   has no such dependency and behaves identically everywhere. */
 @media (min-width: 900px) {
   .bottom-nav {
-    position: sticky; top: 61px; bottom: auto; left: auto; right: auto;
+    position: fixed; top: 61px; bottom: auto; left: 50%; right: auto; transform: translateX(-50%); width: 100%; max-width: 720px;
     border-top: none; border-bottom: 1px solid var(--line);
     justify-content: center; gap: 6px; padding: 10px 4px;
   }
   .bottom-nav a { flex-direction: row; font-size: 0.85rem; max-width: none; padding: 8px 14px; }
   .bottom-nav a svg, .bottom-nav a i { width: 17px; height: 17px; }
-  #app { padding-bottom: 40px; }
+  /* #app needs top padding now too, matching the topbar+nav combined
+     height, since both are fixed/removed from normal flow on desktop and
+     would otherwise overlap the page content instead of pushing it down. */
+  #app { padding-bottom: 40px; padding-top: 108px; }
   #toast { bottom: 24px; }
 }
 

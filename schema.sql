@@ -49,6 +49,14 @@ CREATE TABLE IF NOT EXISTS users (
   pending_donation_prompt_at TEXT DEFAULT NULL,              -- when the prompt was raised, for the 48h SMS reminder
   donation_reminder_sent INTEGER NOT NULL DEFAULT 0,        -- guards against sending the 48h reminder more than once per prompt
   last_eligibility_change_note TEXT DEFAULT NULL,            -- e.g. "আপনাকে 01892****23 কল করেছিলো। ষ্ট্যাটাস: ..." shown on /quick
+  public_profile_view    TEXT NOT NULL DEFAULT 'tabs',        -- 'tabs' | 'list' - donor-configurable public profile layout
+  sms_user_initiated_count INTEGER NOT NULL DEFAULT 0,        -- resets daily (see scheduled sweep); user-initiated SMS sent today
+  sms_system_count        INTEGER NOT NULL DEFAULT 0,         -- resets daily; system-initiated SMS sent today
+  sms_count_date           TEXT DEFAULT NULL,                  -- date (YYYY-MM-DD) the two counters above are for - lets a late-arriving request detect a stale count and reset lazily even if the scheduled sweep hasn't run yet
+  sms_user_initiated_limit_override INTEGER DEFAULT NULL,      -- admin per-user override of the site-wide daily limit; NULL = use site default
+  sms_system_limit_override INTEGER DEFAULT NULL,              -- admin per-user override of the site-wide daily limit; NULL = use site default
+  sms_highest_daily_count  INTEGER NOT NULL DEFAULT 0,         -- this number's highest-ever single-day SMS total since the last monthly/manual reset
+  sms_highest_daily_date   TEXT DEFAULT NULL,                  -- which date achieved sms_highest_daily_count
   created_at             TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -65,7 +73,7 @@ CREATE TABLE IF NOT EXISTS donations (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   hospital_name  TEXT DEFAULT NULL,
-  donation_date  TEXT NOT NULL,
+  donation_date  TEXT DEFAULT NULL,                     -- NULL = date not remembered, hospital_name may still be set
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_donations_user ON donations(user_id, donation_date DESC);
@@ -99,8 +107,9 @@ CREATE INDEX IF NOT EXISTS idx_calls_donor ON calls(donor_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS seek_exclusions (
   requester_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   donor_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  blood_group    TEXT NOT NULL,                         -- exclusions are scoped per blood group, not global to the requester
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (requester_id, donor_id)
+  PRIMARY KEY (requester_id, donor_id, blood_group)
 );
 CREATE INDEX IF NOT EXISTS idx_seek_exclusions_requester ON seek_exclusions(requester_id, created_at);
 
@@ -149,6 +158,23 @@ CREATE INDEX IF NOT EXISTS idx_activity_log_category ON activity_log(category);
 CREATE INDEX IF NOT EXISTS idx_activity_log_actor ON activity_log(actor_user_id);
 
 -- ============================================================
+-- SMS HIGHEST-DAILY-COUNT HISTORY
+-- Each row is a past "highest daily SMS" record that was displaced by a
+-- new record or cleared by an admin reset. The CURRENT record lives on
+-- users.sms_highest_daily_count/sms_highest_daily_date directly (not
+-- here) so "what's the current record" is always a single cheap query;
+-- this table is purely the "Previous Highest Daily SMS Receivers" list.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS sms_daily_record_history (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  mobile       TEXT NOT NULL,            -- snapshot, not a FK - survives the user being deleted later
+  count        INTEGER NOT NULL,
+  record_date  TEXT NOT NULL,            -- the date that count was achieved on
+  reset_at     TEXT NOT NULL DEFAULT (datetime('now')) -- when this record was displaced/cleared
+);
+CREATE INDEX IF NOT EXISTS idx_sms_daily_record_history_reset ON sms_daily_record_history(reset_at DESC);
+
+-- ============================================================
 -- DEFAULT SETTINGS SEED
 -- ============================================================
 INSERT OR IGNORE INTO settings (key, value) VALUES
@@ -190,7 +216,11 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('sms_enabled_eligibility_change_by_call', '1'),
   ('sms_eligibility_change_by_call', 'আপনার এলিজিবিলিটি একটি কলের কারণে পরিবর্তন হয়েছে। ষ্ট্যাটাস: {status}'),
   ('sms_enabled_donation_reminder', '1'),
-  ('sms_donation_reminder', '({siteTitle}) সম্প্রতি রক্তদান করেছেন? এন্ট্রি বা ষ্ট্যাটাস আপডেট করে নিন!');
+  ('sms_donation_reminder', '({siteTitle}) সম্প্রতি রক্তদান করেছেন? এন্ট্রি বা ষ্ট্যাটাস আপডেট করে নিন!'),
+  ('sms_daily_limit_user_initiated', '3'),
+  ('sms_daily_limit_system', '3'),
+  ('sms_over_limit_otp_message', 'আপনার দৈনিক এসএমএস লিমিট শেষ হয়েছে। 01883-600680 নাম্বারে কল করুন'),
+  ('sms_highest_daily_reset_month', '');
 
 INSERT OR IGNORE INTO external_sources (name, url, sort_order) VALUES
   ('BloodBag', 'https://www.bloodbag.app/new-blood-request', 1);

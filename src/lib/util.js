@@ -1,4 +1,5 @@
 // Generic helpers shared across handlers.
+import { getSettings } from "./settings.js";
 
 export function json(data, init = {}) {
   const headers = new Headers(init.headers || {});
@@ -78,12 +79,54 @@ export function isValidUsernameSlug(slug) {
   return /^[a-zA-Z0-9_-]{3,32}$/.test(slug || "");
 }
 
-export function genRandomSlug(len = 5) {
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+// 6-character random username assigned to every new account (self-
+// registered or admin-created) at creation time - uppercase letters and
+// digits, e.g. AHF21B, FNW212, F12FD2. Donors/users can still change it
+// later via the normal username-claim flow; this is just a sane default so
+// no account is ever left without a shareable profile URL.
+export function genRandomSlug(len = 6) {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   let out = "";
   const rnd = crypto.getRandomValues(new Uint8Array(len));
   for (let i = 0; i < len; i++) out += chars[rnd[i] % chars.length];
   return out;
+}
+
+// Loops genRandomSlug until it finds one not already taken (collisions are
+// rare at 36^6 combinations but not impossible) and not on the reserved
+// list, so a brand new account never accidentally lands on a value that
+// collides with an existing profile or a reserved app path.
+export async function genUniqueRandomSlug(db, reservedLower) {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const candidate = genRandomSlug(6);
+    if (reservedLower.has(candidate.toLowerCase())) continue;
+    const taken = await db.prepare("SELECT id FROM users WHERE LOWER(username_slug) = LOWER(?)").bind(candidate).first();
+    if (!taken) return candidate;
+  }
+  // Astronomically unlikely fallback: fall back to a longer random slug so
+  // account creation never actually fails because of this.
+  return genRandomSlug(10);
+}
+
+// App-level paths that would become unreachable if claimed as a username
+// (since /:slug is how a public profile resolves) - always reserved,
+// regardless of admin settings. The admin-managed reserved_usernames
+// setting (comma-separated, checked by callers) adds to this list, never
+// replaces it.
+export const BUILTIN_RESERVED_SLUGS = [
+  "seek", "join", "login", "logout", "register", "forgot-password", "quick",
+  "profile", "profile-edit", "calls", "settings", "admin", "api", "u",
+  "assets", "img", "css", "js", "static", "help", "about", "contact",
+  "privacy", "terms", "index", "home",
+];
+
+export async function getReservedSlugSet(db) {
+  const settings = await getSettings(db);
+  const extra = (settings.reserved_usernames || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  return new Set([...BUILTIN_RESERVED_SLUGS, ...extra]);
 }
 
 export function genOtp() {
@@ -91,20 +134,41 @@ export function genOtp() {
   return String(n).padStart(6, "0");
 }
 
-export function maskMobile(mobile) {
+// visibleDigits controls how many digits show at the START before the mask
+// (admin-configurable via settings.mask_visible_digits, default 4 - e.g.
+// "0138" then stars then the last 2, matching the site default example
+// "013******34"). Total length and the trailing 2 digits are fixed to
+// match Bangladeshi mobile number conventions; only the leading reveal
+// width changes.
+export function maskMobile(mobile, settings) {
   if (!mobile || mobile.length < 11) return mobile;
-  return mobile.slice(0, 5) + "****" + mobile.slice(9);
+  const visible = settings ? (parseInt(settings.mask_visible_digits, 10) || 4) : 4;
+  const clamped = Math.max(2, Math.min(8, visible));
+  const trailing = mobile.slice(9);
+  const leading = mobile.slice(0, clamped);
+  const starCount = 11 - clamped - trailing.length;
+  return leading + "*".repeat(Math.max(0, starCount)) + trailing;
 }
 
 export function nowIso() {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
 }
 
+// Returns {} for a genuinely empty body (some endpoints are called with no
+// body at all, e.g. logout) but THROWS on a body that exists and failed to
+// parse - previously this swallowed every parse failure into {}, which
+// meant a request that failed only because its body was too large (e.g. a
+// full-resolution photo as base64, well over Workers' request size limits)
+// silently discarded every field in the request instead of surfacing an
+// error - "profilePicBase64 didn't come through" with no visible cause,
+// matching the reported "image is not being uploaded" symptom exactly.
 export async function readJson(request) {
+  const text = await request.text();
+  if (!text) return {};
   try {
-    return await request.json();
+    return JSON.parse(text);
   } catch {
-    return {};
+    throw new Error("অনুরোধের তথ্য পড়া যায়নি (ছবি বা তথ্যের আকার খুব বড় হতে পারে)");
   }
 }
 

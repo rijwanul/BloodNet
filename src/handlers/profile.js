@@ -1,4 +1,4 @@
-import { ok, err, readJson, isValidBloodGroup, isValidUsernameSlug, genRandomSlug, nowIso } from "../lib/util.js";
+import { ok, err, readJson, isValidBloodGroup, isValidUsernameSlug, genRandomSlug, genUniqueRandomSlug, getReservedSlugSet, nowIso } from "../lib/util.js";
 import { getSettings, settingBool } from "../lib/settings.js";
 import { getCurrentUser, clearSessionCookie } from "../lib/authctx.js";
 import { logActivity } from "../lib/activity.js";
@@ -51,8 +51,19 @@ async function donationCount(db, userId) {
 }
 
 export async function handleProfileMe(request, env) {
-  const user = await getCurrentUser(request, env);
+  let user = await getCurrentUser(request, env);
   if (!user) return err("লগইন প্রয়োজন", 401);
+
+  // If this donor's snooze has already expired, flip them back to
+  // eligible right now rather than waiting for some unrelated requester's
+  // search to trigger the sweep - otherwise a donor loading their own
+  // profile right as their "সময় শেষ" countdown hits zero would still see
+  // themselves as snoozed until someone else happened to search nearby.
+  if (user.is_donor && user.eligibility_status === "snoozed" && user.eligibility_snooze_until && user.eligibility_snooze_until <= nowIso()) {
+    await env.DB.prepare("UPDATE users SET eligibility_status = 'on', eligibility_snooze_until = NULL, eligibility_snooze_reason = NULL WHERE id = ?").bind(user.id).run();
+    user = { ...user, eligibility_status: "on", eligibility_snooze_until: null, eligibility_snooze_reason: null };
+  }
+
   const explicit = await donationCount(env.DB, user.id);
   const totalDonations = explicit + (user.extra_donation_count || 0);
   const location = user.location_id
@@ -73,6 +84,7 @@ export async function handleProfileMe(request, env) {
       locationName: location ? location.name : null,
       locationId: user.location_id,
       note: user.donor_note,
+      publicProfileView: user.public_profile_view || "tabs",
       totalDonations,
       totalCallsMade: user.total_calls_made,
       totalCallsReceived: user.total_calls_received,
@@ -118,16 +130,31 @@ export async function handleProfileEdit(request, env) {
     fields.push("donor_note = ?");
     values.push(body.note.slice(0, 300)); // empty string is allowed - donor can save a blank note
   }
+  if (body.publicProfileView === "tabs" || body.publicProfileView === "list") {
+    fields.push("public_profile_view = ?");
+    values.push(body.publicProfileView);
+  }
 
-  // Profile picture upload (base64 image data sent from client)
-  if (body.profilePicBase64) {
+  // Profile picture upload (base64 image data sent from client) or removal
+  if (body.removeProfilePic) {
+    fields.push("profile_pic_url = ?", "profile_pic_delete_url = ?");
+    values.push(null, null);
+  } else if (body.profilePicBase64) {
     const settings = await getSettings(env.DB);
     try {
       const { url, deleteUrl } = await uploadToImgbb(settings.imgbb_api_key, body.profilePicBase64);
       fields.push("profile_pic_url = ?", "profile_pic_delete_url = ?");
       values.push(url, deleteUrl);
     } catch (e) {
-      return err(String(e.message || e));
+      // Never leak which third-party provider is behind image hosting in
+      // an error a user can see - and log the failure (with the filename,
+      // when the client sends one) for admin visibility instead.
+      await logActivity(env.DB, {
+        actorUser: user,
+        category: "system",
+        actionText: `প্রোফাইল ছবি আপলোড ব্যর্থ হয়েছে${body.profilePicFileName ? ` (ফাইল: ${body.profilePicFileName})` : ""}: ${String(e.message || e)}`,
+      });
+      return err("আপলোড ব্যর্থ হয়েছে।");
     }
   }
 
@@ -189,6 +216,8 @@ export async function handleUsernameCheck(request, env) {
   const url = new URL(request.url);
   const slug = normalizeSlug(url.searchParams.get("slug"));
   if (!isValidUsernameSlug(slug)) return err("ইউজারনেইম অবৈধ (৩-৩২ অক্ষর, শুধু a-z, 0-9, _, -)");
+  const reserved = await getReservedSlugSet(env.DB);
+  if (reserved.has(slug.toLowerCase())) return ok({ available: false, reason: "reserved" });
   const settings = await getSettings(env.DB);
   const localTaken = await env.DB.prepare("SELECT id FROM users WHERE LOWER(username_slug) = LOWER(?)").bind(slug).first();
   if (localTaken) return ok({ available: false, reason: "local" });
@@ -205,6 +234,9 @@ export async function handleUsernameClaim(request, env) {
   const body = await readJson(request);
   const slug = normalizeSlug(body.slug);
   if (!isValidUsernameSlug(slug)) return err("ইউজারনেইম অবৈধ (৩-৩২ অক্ষর, শুধু a-z, 0-9, _, -)");
+
+  const reserved = await getReservedSlugSet(env.DB);
+  if (reserved.has(slug.toLowerCase())) return err("এই ইউজারনেইমটি ক্লেইম করা যাচ্ছে না");
 
   const settings = await getSettings(env.DB);
   const localTaken = await env.DB
@@ -243,6 +275,16 @@ export async function handleProfileVisibility(request, env) {
   const user = await getCurrentUser(request, env);
   if (!user) return err("লগইন প্রয়োজন", 401);
   const body = await readJson(request);
+
+  // Reset-to-default: clears visibility_json entirely so DEFAULT_VISIBILITY
+  // applies cleanly, rather than the frontend having to know/duplicate
+  // what the defaults are.
+  if (body.reset) {
+    await env.DB.prepare("UPDATE users SET visibility_json = NULL, updated_at = ? WHERE id = ?").bind(nowIso(), user.id).run();
+    await logActivity(env.DB, { actorUser: user, category: "account", actionText: "গোপনীয়তা সেটিংস ডিফল্টে রিসেট করেছেন" });
+    return ok({ visibility: DEFAULT_VISIBILITY });
+  }
+
   const incoming = body.visibility || {};
   const current = { ...DEFAULT_VISIBILITY, ...safeJson(user.visibility_json) };
   for (const [k, v] of Object.entries(incoming)) {
@@ -257,22 +299,31 @@ export async function handleProfileVisibility(request, env) {
 export async function handleDonationsList(request, env) {
   const user = await getCurrentUser(request, env);
   if (!user) return err("লগইন প্রয়োজন", 401);
+  // Dated entries first (newest first), undated entries (date শোন করা - shown
+  // as a dash by the frontend) after them - donation_date DESC already puts
+  // NULLs last in SQLite's default ordering, so no special-casing needed here.
   const { results } = await env.DB
-    .prepare("SELECT id, hospital_name, donation_date FROM donations WHERE user_id = ? ORDER BY donation_date DESC")
+    .prepare("SELECT id, hospital_name, donation_date FROM donations WHERE user_id = ? ORDER BY donation_date DESC, id DESC")
     .bind(user.id)
     .all();
   return ok({ donations: results, extraCount: user.extra_donation_count || 0 });
 }
 
-// Single entry point for adding a donation record, covering both the
-// normal dated case and the "মনে নেই" (don't remember) case:
+// Single entry point for adding a donation record, covering three cases:
 //  - dateUnknown false -> a normal dated entry (hospitalName optional,
 //    independently markable as unknown/blank).
-//  - dateUnknown true, moreUnknownExist false -> this one entry folds into
-//    the undated "extra" bucket as +1.
+//  - dateUnknown true, hospitalUnknown false, moreUnknownExist false -> the
+//    donor remembers the HOSPITAL but not the date. This is still its own
+//    row (donation_date = NULL) so the hospital name isn't lost - shown in
+//    the list with a dash for the date, sorted below dated entries.
 //  - dateUnknown true, moreUnknownExist true -> donor provides the GRAND
-//    TOTAL of undated donations (including this one), replacing the
-//    extra-count bucket outright rather than adding to it.
+//    TOTAL of undated-and-unremembered donations (including this one),
+//    replacing the extra-count bucket outright rather than adding to it.
+//    This bucket is for donations with NEITHER a date NOR a hospital name
+//    remembered - if a hospital name is known, use the row-per-entry path
+//    above instead, even when moreUnknownExist is also checked (in that
+//    case the current entry becomes its own dated-hospital-only row, and
+//    moreUnknownExist covers ONLY the additional fully-forgotten ones).
 export async function handleDonationsAdd(request, env) {
   const user = await getCurrentUser(request, env);
   if (!user) return err("লগইন প্রয়োজন", 401);
@@ -296,7 +347,27 @@ export async function handleDonationsAdd(request, env) {
     return ok({ added: true });
   }
 
-  // dateUnknown = true
+  // dateUnknown = true, hospital name IS known -> its own undated row.
+  if (!hospitalUnknown && body.hospitalName) {
+    await env.DB
+      .prepare("INSERT INTO donations (user_id, hospital_name, donation_date, created_at) VALUES (?, ?, NULL, ?)")
+      .bind(user.id, body.hospitalName, nowIso())
+      .run();
+    await logActivity(env.DB, { actorUser: user, category: "donation", actionText: `পূর্বের রক্তদানের তথ্য যোগ করেছেন (তারিখ মনে নেই, ${body.hospitalName})` });
+
+    // moreUnknownExist can still apply on top, for OTHER donations where
+    // neither the date nor the hospital is remembered.
+    if (body.moreUnknownExist) {
+      const total = parseInt(body.totalUnknownCount, 10);
+      if (!Number.isFinite(total) || total < 1 || total > 500) return err("সঠিক সংখ্যা দিন (কমপক্ষে ১)");
+      await env.DB.prepare("UPDATE users SET extra_donation_count = ?, updated_at = ? WHERE id = ?").bind(total, nowIso(), user.id).run();
+      await logActivity(env.DB, { actorUser: user, category: "donation", actionText: `মনে না থাকা রক্তদানের মোট সংখ্যা সেট করেছেন (${total})` });
+      return ok({ added: true, extraCount: total });
+    }
+    return ok({ added: true });
+  }
+
+  // dateUnknown = true, hospital ALSO unknown -> the anonymous bucket.
   if (body.moreUnknownExist) {
     const total = parseInt(body.totalUnknownCount, 10);
     if (!Number.isFinite(total) || total < 1 || total > 500) return err("সঠিক সংখ্যা দিন (কমপক্ষে ১)");
@@ -309,6 +380,41 @@ export async function handleDonationsAdd(request, env) {
   await logActivity(env.DB, { actorUser: user, category: "donation", actionText: "মনে না থাকা একটি রক্তদান যোগ করেছেন" });
   const row = await env.DB.prepare("SELECT extra_donation_count FROM users WHERE id = ?").bind(user.id).first();
   return ok({ extraCount: row.extra_donation_count });
+}
+
+// Editing a donation entry: either field can be updated independently.
+// Passing date: null clears the date (moves the entry to the undated
+// group); hospitalName: null clears the hospital name. last_donation_date
+// on the user record is NOT recomputed here - it only ever advances
+// forward via handleDonationsAdd's dated-entry path, so editing/deleting a
+// past entry deliberately leaves it alone rather than silently rewriting
+// donor-facing "সর্বশেষ রক্তদান" based on an edit to older history.
+export async function handleDonationEdit(request, env, idStr) {
+  const user = await getCurrentUser(request, env);
+  if (!user) return err("লগইন প্রয়োজন", 401);
+  const id = parseInt(idStr, 10);
+  const body = await readJson(request);
+  const row = await env.DB.prepare("SELECT id FROM donations WHERE id = ? AND user_id = ?").bind(id, user.id).first();
+  if (!row) return err("এন্ট্রি পাওয়া যায়নি", 404);
+
+  const date = body.dateUnknown ? null : (body.date || null);
+  const hospitalName = body.hospitalUnknown ? null : (body.hospitalName || null);
+  if (!date && !hospitalName) return err("তারিখ অথবা হাসপাতালের নাম অন্তত একটি দিন");
+
+  await env.DB.prepare("UPDATE donations SET hospital_name = ?, donation_date = ? WHERE id = ? AND user_id = ?").bind(hospitalName, date, id, user.id).run();
+  await logActivity(env.DB, { actorUser: user, category: "donation", actionText: "একটি রক্তদান এন্ট্রি সম্পাদনা করেছেন" });
+  return ok({ updated: true });
+}
+
+export async function handleDonationDelete(request, env, idStr) {
+  const user = await getCurrentUser(request, env);
+  if (!user) return err("লগইন প্রয়োজন", 401);
+  const id = parseInt(idStr, 10);
+  const row = await env.DB.prepare("SELECT id FROM donations WHERE id = ? AND user_id = ?").bind(id, user.id).first();
+  if (!row) return err("এন্ট্রি পাওয়া যায়নি", 404);
+  await env.DB.prepare("DELETE FROM donations WHERE id = ? AND user_id = ?").bind(id, user.id).run();
+  await logActivity(env.DB, { actorUser: user, category: "donation", actionText: "একটি রক্তদান এন্ট্রি ডিলিট করেছেন" });
+  return ok({ deleted: true });
 }
 
 export async function handleProfileDelete(request, env) {
@@ -342,8 +448,18 @@ export async function handleProfileDelete(request, env) {
 const ELIGIBILITY_LABELS_BN = { on: "চালু আছে", snoozed: "সাময়িক বন্ধ", off: "বন্ধ" };
 
 export async function handlePublicProfile(request, env, slug) {
-  const user = await env.DB.prepare("SELECT * FROM users WHERE LOWER(username_slug) = LOWER(?) AND deleted = 0").bind(slug).first();
+  let user = await env.DB.prepare("SELECT * FROM users WHERE LOWER(username_slug) = LOWER(?) AND deleted = 0").bind(slug).first();
   if (!user) return err("প্রোফাইল পাওয়া যায়নি", 404);
+
+  // Same targeted wake-check as handleProfileMe - a visitor to this
+  // profile shouldn't see a stale "snoozed" eligibility that's actually
+  // already expired, just because no unrelated /seek search happened to
+  // trigger the general sweep yet.
+  if (user.is_donor && user.eligibility_status === "snoozed" && user.eligibility_snooze_until && user.eligibility_snooze_until <= nowIso()) {
+    await env.DB.prepare("UPDATE users SET eligibility_status = 'on', eligibility_snooze_until = NULL, eligibility_snooze_reason = NULL WHERE id = ?").bind(user.id).run();
+    user = { ...user, eligibility_status: "on", eligibility_snooze_until: null, eligibility_snooze_reason: null };
+  }
+
   const viewer = await getCurrentUser(request, env);
   const vis = { ...DEFAULT_VISIBILITY, ...safeJson(user.visibility_json) };
   const explicit = await donationCount(env.DB, user.id);
@@ -362,7 +478,8 @@ export async function handlePublicProfile(request, env, slug) {
   }
   let calls = [];
   if (show("call_history_tab")) {
-    calls = await publicCallHistoryFor(env.DB, user.id);
+    const settings = await getSettings(env.DB);
+    calls = await publicCallHistoryFor(env.DB, user.id, settings);
   }
 
   return ok({
@@ -392,6 +509,7 @@ export async function handlePublicProfile(request, env, slug) {
       totalCallsMade: user.total_calls_made,
       totalCallsReceived: user.total_calls_received,
       donorsManagedCount: user.donors_managed_count,
+      publicProfileView: user.public_profile_view || "tabs",
     },
   });
 }

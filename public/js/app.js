@@ -17,6 +17,7 @@ const ROUTES = [
   { path: "/admin/external-sources", render: (p, v) => ViewsAdmin.externalSources(v) },
   { path: "/admin/activity-log", render: (p, v) => ViewsAdmin.activityLog(v) },
   { path: "/admin/sms", render: (p, v) => ViewsAdmin.smsSettings(v) },
+  { path: "/admin/sms-analytics", render: (p, v) => ViewsAdmin.smsAnalytics(v) },
   { path: "/admin/site-apis", render: (p, v) => ViewsAdmin.siteApis(v) },
   { path: "/admin/site-settings", render: (p, v) => ViewsAdmin.siteSettings(v) },
   { path: "/admin/locations", render: (p, v) => ViewsAdmin.locations(v) },

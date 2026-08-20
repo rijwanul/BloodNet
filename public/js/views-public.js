@@ -104,22 +104,29 @@ function renderPasswordStep(container, mobile, onDone, onBack) {
 async function renderOtpStep(container, mobile, purpose, onDone, onBack) {
   container.innerHTML = "";
   container.appendChild(backRow(onBack));
+  let overLimitMessage = null;
   try {
-    await API.post("/api/otp/send", { mobile, purpose });
-    toast("OTP পাঠানো হয়েছে");
+    const res = await API.post("/api/otp/send", { mobile, purpose });
+    if (res.overLimitMessage) overLimitMessage = res.overLimitMessage;
+    else toast("OTP পাঠানো হয়েছে");
   } catch (e) { toast(e.message); }
 
   const card = h("div", { class: "card stack" });
   const otpField = h("input", { type: "text", inputmode: "numeric", maxlength: "6", placeholder: "৬ সংখ্যার OTP" });
   const pwWrap = passwordField("আপনার ইচ্ছেমতো নতুন পাসওয়ার্ড");
   const pwField = pwWrap.querySelector("input");
-  const confirmWrap = passwordField("পাসওয়ার্ড আবার লিখুন");
+  const confirmWrap = passwordField("নতুন পাসওয়ার্ড আবার লিখুন");
   const confirmField = confirmWrap.querySelector("input");
   const errBox = h("div", { class: "field-error" });
   const submitBtn = h("button", { class: "btn btn-primary" }, purpose === "reset" ? "পাসওয়ার্ড রিসেট করুন" : "নিশ্চিত করুন");
   card.appendChild(h("div", { class: "field" }, [h("label", {}, "ওটিপি কোড"), otpField]));
+  // Shown when the recipient has hit their daily SMS cap - the OTP flow
+  // still continues (the field stays usable in case the person already
+  // knows a manually-provided code from the admin), but they're told why
+  // nothing arrived, with the admin-configurable contact instruction.
+  if (overLimitMessage) card.appendChild(h("p", { class: "field-error small" }, overLimitMessage));
   card.appendChild(h("div", { class: "field" }, [h("label", {}, "আপনার ইচ্ছেমতো নতুন পাসওয়ার্ড"), pwWrap]));
-  card.appendChild(h("div", { class: "field" }, [h("label", {}, "পাসওয়ার্ড নিশ্চিত করুন"), confirmWrap, errBox]));
+  card.appendChild(h("div", { class: "field" }, [h("label", {}, "নতুন পাসওয়ার্ড আবার লিখুন"), confirmWrap, errBox]));
   card.appendChild(submitBtn);
   container.appendChild(card);
   enterSubmits([otpField, pwField, confirmField], submitBtn);
@@ -176,19 +183,6 @@ ViewsPublic.forgotPassword = function (view) {
 // straight back to that donor card instead of re-asking for a blood group.
 ViewsPublic.seek = async function (view) {
   view.innerHTML = "";
-
-  if (APP.user) {
-    try {
-      const state = await API.get("/api/seek/state");
-      if (state.active && state.donor) {
-        const box = h("div");
-        view.appendChild(box);
-        renderDonorCard(box, state.donor, state.bloodGroup);
-        return;
-      }
-    } catch { /* fall through to normal flow */ }
-  }
-
   renderBloodGroupStep(view);
 };
 
@@ -276,10 +270,10 @@ async function showNextDonor(box, bloodGroup) {
     return;
   }
 
-  renderDonorCard(box, res.donor, bloodGroup);
+  renderDonorCard(box, res.donor, bloodGroup, res.alreadyCalled);
 }
 
-function renderDonorCard(box, donor, bloodGroup) {
+function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
   box.innerHTML = "";
   const card = h("div", { class: "card donor-card" });
   card.appendChild(h("img", { class: "donor-card__pic", src: donor.profilePicUrl || pickDefaultAvatar(), alt: "" }));
@@ -303,14 +297,32 @@ function renderDonorCard(box, donor, bloodGroup) {
   const timerSeconds = (APP.settings && APP.settings.callStatusTimerSeconds) || 20;
   let revealed = false;
 
+  // If the call was already started before a refresh (number already
+  // revealed, countdown already run or in progress server-side), skip
+  // straight to the "already called" state instead of replaying the
+  // reveal step and restarting the 20-second countdown from zero. The
+  // exact mobile number itself isn't re-shown here (avoids a second
+  // reveal call just to redisplay it), but the button still redials
+  // correctly since donor-number is re-fetched on click same as before.
+  if (alreadyCalled) {
+    revealed = true;
+    callBtn.innerHTML = "";
+    callBtn.appendChild(icon("phone", "small"));
+    callBtn.append(" আবার কল করুন");
+    callBtn.dataset.needsNumber = "1";
+    statusBox.dataset.started = "1";
+    statusBox.style.display = "block";
+    renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn);
+  }
+
   callBtn.onclick = async () => {
     // The button stays enabled/visible even after the timer elapses so the
     // requester can tap it again to redial - it does not lock or disappear.
-    if (!revealed) {
+    if (!revealed || callBtn.dataset.needsNumber) {
       callBtn.disabled = true;
       let realMobile;
       try {
-        const res = await API.get(`/api/seek/donor-number?donorId=${donor.id}`);
+        const res = await API.get(`/api/seek/donor-number?donorId=${donor.id}&bloodGroup=${encodeURIComponent(bloodGroup)}`);
         realMobile = res.mobile;
       } catch (e) {
         toast(e.message);
@@ -318,6 +330,7 @@ function renderDonorCard(box, donor, bloodGroup) {
         return;
       }
       revealed = true;
+      delete callBtn.dataset.needsNumber;
       callBtn.dataset.mobile = realMobile;
       callBtn.disabled = false;
       callBtn.innerHTML = "";
@@ -460,51 +473,87 @@ ViewsPublic.publicProfile = async function (view, slug) {
     card.appendChild(h("div", { class: "donor-card__meta" }, meta));
     if (profile.eligibilityLabel) {
       const badgeClass = profile.eligibilityStatus === "on" ? "badge-on" : profile.eligibilityStatus === "snoozed" ? "badge-snoozed" : "badge-off";
-      card.appendChild(h("div", { style: "margin-top:6px" }, h("span", { class: "badge " + badgeClass }, `বর্তমান এলিজিবিলিটি: ${profile.eligibilityLabel}`)));
+      const badgeRow = h("div", { style: "margin-top:6px" }, h("span", { class: "badge " + badgeClass }, `বর্তমান এলিজিবিলিটি: ${profile.eligibilityLabel}`));
+      // Timer only makes sense (and is only shown) for the temporary
+      // "snoozed" state - "on"/"off" have no countdown to display.
+      if (profile.eligibilityStatus === "snoozed" && profile.eligibilitySnoozeUntil) {
+        badgeRow.appendChild(inlineCountdown(profile.eligibilitySnoozeUntil));
+      }
+      card.appendChild(badgeRow);
     }
   }
   if (profile.note) card.appendChild(h("div", { class: "donor-card__note" }, `নোট: ${profile.note}`));
   view.appendChild(card);
 
-  const info = h("div", { class: "card stack" });
-  info.appendChild(h("h3", {}, "ডোনারের তথ্য"));
+  // The header card above (picture/name/eligibility) is always shown as-is;
+  // everything below is organized as either stacked sections (list view) or
+  // tabs (tab view, default) per the donor's own Edit Profile preference.
+  const sections = [];
+
+  const info = h("div", { class: "stack" });
   if (profile.addressSummary) info.appendChild(h("div", {}, [h("b", {}, "সংক্ষিপ্ত ঠিকানা: "), profile.addressSummary]));
   if (profile.lastDonationDate) info.appendChild(h("div", {}, [h("b", {}, "সর্বশেষ রক্তদান: "), bnDate(profile.lastDonationDate)]));
   if (profile.mobile) info.appendChild(h("div", {}, [h("b", {}, "মোবাইল: "), profile.mobile]));
   if (profile.locationName) info.appendChild(h("div", {}, [h("b", {}, "লোকেশন: "), profile.locationName]));
-  view.appendChild(info);
+  sections.push({ key: "info", label: "তথ্য", content: info });
 
   if (profile.donationHistoryVisible) {
-    const donCard = h("div", { class: "card stack" });
-    donCard.appendChild(h("h3", {}, "পূর্বের ডোনেশনসমূহ"));
+    const donContent = h("div", { class: "stack" });
     const donations = profile.donations || [];
     if (!donations.length && !profile.extraDonationCount) {
-      donCard.appendChild(h("p", { class: "muted" }, "কোনো তথ্য নেই"));
+      donContent.appendChild(h("p", { class: "muted" }, "কোনো তথ্য নেই"));
     } else {
-      donations.forEach((d) => donCard.appendChild(h("div", { class: "list-item" }, [
-        h("span", {}, bnDate(d.donation_date)), h("span", { class: "muted" }, d.hospital_name || ""),
+      donations.forEach((d) => donContent.appendChild(h("div", { class: "list-item" }, [
+        h("span", {}, d.donation_date ? bnDate(d.donation_date) : "—"), h("span", { class: "muted" }, d.hospital_name || ""),
       ])));
-      if (profile.extraDonationCount) donCard.appendChild(h("p", { class: "muted small" }, `…এবং আরো ${toBnDigits(profile.extraDonationCount)} বার`));
+      if (profile.extraDonationCount) donContent.appendChild(h("p", { class: "muted small" }, `…এবং আরো ${toBnDigits(profile.extraDonationCount)} বার`));
     }
-    view.appendChild(donCard);
+    sections.push({ key: "donations", label: "ডোনেশন", content: donContent });
   }
 
   if (profile.callHistoryVisible) {
-    const callCard = h("div", { class: "card stack" });
-    callCard.appendChild(h("h3", {}, "কল হিষ্ট্রি"));
+    const callContent = h("div", { class: "stack" });
     const calls = profile.calls || [];
-    if (!calls.length) callCard.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
-    calls.forEach((c) => callCard.appendChild(h("div", { class: "list-item" }, h("span", {}, [
+    if (!calls.length) callContent.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
+    calls.forEach((c) => callContent.appendChild(h("div", { class: "list-item" }, h("span", {}, [
       personLink(c.personLabel, c.slug), " " + c.suffixText,
     ]))));
-    view.appendChild(callCard);
+    sections.push({ key: "calls", label: "কল হিষ্ট্রি", content: callContent });
   }
 
-  const other = h("div", { class: "card stack" });
-  other.appendChild(h("h3", {}, "অন্যান্য"));
+  const other = h("div", { class: "stack" });
   other.appendChild(h("div", {}, [h("b", {}, "প্ল্যাটফর্মে জয়েন করেছেন: "), bnDate(profile.joinedAt)]));
   other.appendChild(h("div", {}, [h("b", {}, "সর্বমোট কল করেছেন: "), toBnDigits(profile.totalCallsMade)]));
   if (profile.donorsManagedCount > 0) other.appendChild(h("div", {}, [h("b", {}, "রক্তদাতা পেয়েছেন: "), `${toBnDigits(profile.donorsManagedCount)} বার`]));
   if (profile.isDonor) other.appendChild(h("div", {}, [h("b", {}, "সর্বমোট কল রিসিভ করেছেন: "), toBnDigits(profile.totalCallsReceived)]));
-  view.appendChild(other);
+  sections.push({ key: "other", label: "অন্যান্য", content: other });
+
+  if (profile.publicProfileView === "list") {
+    sections.forEach((s) => {
+      const sCard = h("div", { class: "card stack" });
+      sCard.appendChild(h("h3", {}, s.label));
+      sCard.appendChild(s.content);
+      view.appendChild(sCard);
+    });
+  } else {
+    // Tab view (default): a single card with a tab strip up top and only
+    // the active section's content shown below it.
+    const tabCard = h("div", { class: "card" });
+    const tabStrip = h("div", { class: "profile-tabs" });
+    const bodyWrap = h("div", { style: "margin-top:14px" });
+    sections.forEach((s, i) => {
+      const btn = h("button", { type: "button", class: "profile-tabs__btn" + (i === 0 ? " is-active" : "") }, s.label);
+      btn.onclick = () => {
+        tabStrip.querySelectorAll(".profile-tabs__btn").forEach((b) => b.classList.remove("is-active"));
+        btn.classList.add("is-active");
+        bodyWrap.innerHTML = "";
+        bodyWrap.appendChild(s.content);
+      };
+      tabStrip.appendChild(btn);
+    });
+    tabCard.appendChild(tabStrip);
+    bodyWrap.appendChild(sections[0].content);
+    tabCard.appendChild(bodyWrap);
+    view.appendChild(tabCard);
+  }
 };

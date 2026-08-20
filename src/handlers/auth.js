@@ -1,4 +1,4 @@
-import { ok, err, readJson, isValidBdMobile, genOtp, hashPassword, verifyPassword, nowIso } from "../lib/util.js";
+import { ok, err, readJson, isValidBdMobile, genOtp, hashPassword, verifyPassword, nowIso, genUniqueRandomSlug, getReservedSlugSet } from "../lib/util.js";
 import { getSettings, settingInt } from "../lib/settings.js";
 import { storeOtp, verifyOtp } from "../lib/kvstore.js";
 import { dispatchOtp, sendNotificationSms, fillTemplate } from "../lib/sms.js";
@@ -36,7 +36,14 @@ export async function handleOtpSend(request, env) {
   if (!manual) {
     await storeOtp(env.KV, purpose, mobile, code);
   }
-  await dispatchOtp(env.DB, settings, mobile, code);
+  const result = await dispatchOtp(env.DB, settings, mobile, code);
+  if (result.overLimit) {
+    // Still reports sent:true (OTP flow continues to the code-entry step
+    // even though nothing was actually delivered) but includes the
+    // admin-configurable message so the frontend can show it under the
+    // OTP input, per spec, rather than a generic failure.
+    return ok({ sent: true, overLimitMessage: result.overLimitMessage });
+  }
   return ok({ sent: true });
 }
 
@@ -61,13 +68,18 @@ export async function handleRegister(request, env) {
   if (existing) return err("এই মোবাইল নাম্বারে ইতিমধ্যে একাউন্ট আছে");
 
   const passwordHash = await hashPassword(password);
+  // Every account gets a random shareable username at creation time (per
+  // spec) so no profile is ever left without a bookmarkable URL - the
+  // donor can still change it later via the normal username-claim flow.
+  const reserved = await getReservedSlugSet(env.DB);
+  const randomSlug = await genUniqueRandomSlug(env.DB, reserved);
   const res = await env.DB
-    .prepare("INSERT INTO users (mobile, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)")
-    .bind(mobile, passwordHash, nowIso(), nowIso())
+    .prepare("INSERT INTO users (mobile, password_hash, username_slug, username_display, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .bind(mobile, passwordHash, randomSlug.toLowerCase(), randomSlug, nowIso(), nowIso())
     .run();
   const userId = res.meta.last_row_id;
 
-  const msg = fillTemplate(settings.sms_account_created_self, { siteTitle: settings.site_title });
+  const msg = fillTemplate(settings.sms_account_created_self, { siteTitle: settings.site_title }, settings);
   await sendNotificationSms(env.DB, settings, mobile, msg, "account_created_self");
   await logActivity(env.DB, { actorLabel: mobile, category: "account", actionText: `নতুন একাউন্ট তৈরি হয়েছে (${mobile})` });
 

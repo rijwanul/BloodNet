@@ -33,23 +33,39 @@ export async function verifyOtp(kv, purpose, mobile, code, overrideCode = null) 
 }
 
 // --- Donor call-lock: keeps a requester pinned to the same donor while a
-// call is in progress instead of re-rolling a new one on every refresh. ---
-export async function getLock(kv, requesterId) {
-  const raw = await kv.get(`lock:${requesterId}`);
+// call is in progress instead of re-rolling a new one on every refresh.
+// Scoped per (requester, bloodGroup) - a requester can be mid-call with a
+// B+ donor and simultaneously start a fresh A+ search without either one
+// disturbing the other, and switching blood groups back and forth can't be
+// used to dodge the same-donor exclusion within a single group's session. ---
+export async function getLock(kv, requesterId, bloodGroup) {
+  const raw = await kv.get(`lock:${requesterId}:${bloodGroup}`);
   return raw ? JSON.parse(raw) : null;
 }
 
 export async function setLock(kv, requesterId, donorId, minutes, bloodGroup) {
   const ttl = Math.max(60, Math.round(minutes * 60));
   await kv.put(
-    `lock:${requesterId}`,
+    `lock:${requesterId}:${bloodGroup}`,
     JSON.stringify({ donorId, bloodGroup, lockedAt: Date.now(), expiresAt: Date.now() + ttl * 1000 }),
     { expirationTtl: ttl }
   );
 }
 
-export async function clearLock(kv, requesterId) {
-  await kv.delete(`lock:${requesterId}`);
+export async function clearLock(kv, requesterId, bloodGroup) {
+  await kv.delete(`lock:${requesterId}:${bloodGroup}`);
+}
+
+// Used only where the caller doesn't know which group's lock is relevant
+// yet (e.g. resolving a donor-number request purely from donorId) - scans
+// the 8 possible per-group keys for this requester and returns whichever
+// one currently points at this donor, or null if none do.
+export async function findLockForDonor(kv, requesterId, donorId, bloodGroups) {
+  for (const bg of bloodGroups) {
+    const lock = await getLock(kv, requesterId, bg);
+    if (lock && lock.donorId === donorId) return lock;
+  }
+  return null;
 }
 
 // --- Rolling call-rate limit per requester (e.g. 20 calls / 15 min) ---

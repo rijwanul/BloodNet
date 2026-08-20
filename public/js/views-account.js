@@ -19,7 +19,14 @@ ViewsAccount.quick = async function (view) {
     const banner = h("div", { class: "banner banner--dismissible", style: "background:var(--surface-2);color:var(--ink-soft)" }, [
       h("span", {}, lastEligibilityChangeNote),
     ]);
-    const dismissBtn = h("button", { type: "button", class: "banner__dismiss", "aria-label": "বন্ধ করুন", onclick: () => banner.remove() }, icon("x", "small"));
+    // Persists server-side now (previously DOM-only, so it reappeared on
+    // every refresh even after being dismissed) - the DOM removal still
+    // happens immediately for instant feedback, the API call runs
+    // alongside it rather than blocking the visual dismissal.
+    const dismissBtn = h("button", { type: "button", class: "banner__dismiss", "aria-label": "বন্ধ করুন", onclick: () => {
+      banner.remove();
+      API.post("/api/donor/dismiss-eligibility-note", {}).catch(() => {});
+    } }, icon("x", "small"));
     banner.appendChild(dismissBtn);
     view.appendChild(banner);
   }
@@ -181,6 +188,23 @@ async function renderLocationChangeSection(view, status) {
   view.appendChild(locCard);
 }
 
+// Compact inline countdown for a public-facing eligibility badge - unlike
+// renderCountdown (which is a full reason+banner used on the donor's own
+// snooze page), this returns just a small ticking text span suitable for
+// sitting next to a badge. Same UTC "Z" fix applies (see renderCountdown).
+function inlineCountdown(untilIso) {
+  const span = h("span", { class: "small muted", style: "margin-left:6px" });
+  const target = new Date(untilIso.replace(" ", "T") + "Z").getTime();
+  const tick = () => {
+    const diff = target - Date.now();
+    if (diff <= 0) { span.textContent = "(শীঘ্রই সক্রিয় হবে)"; clearInterval(interval); return; }
+    span.textContent = `(সক্রিয় হতে বাকি: ${bnDuration(Date.now(), target)})`;
+  };
+  tick();
+  const interval = setInterval(tick, 1000);
+  return span;
+}
+
 function renderCountdown(untilIso, reason) {
   const wrap = h("div", { class: "banner banner-error", style: "background:var(--warn-tint);color:var(--warn);border-color:var(--warn)" });
   const label = h("span", {});
@@ -225,6 +249,7 @@ function renderSnoozeOptions(container, view) {
 async function onSnoozeChoice(key, view) {
   if (key === "until_date") {
     const dateInput = h("input", { type: "date", min: todayIsoDate() });
+    enforceDateBound(dateInput, todayIsoDate(), "min", "অতীতের তারিখ নির্বাচন করা যাবে না");
     const body = h("div", { class: "field" }, [h("label", {}, "কোন তারিখ পর্যন্ত স্থগিত রাখতে চান?"), dateInput]);
     const okBtn = h("button", { class: "btn btn-primary" }, "নিশ্চিত করুন");
     const cancelBtn = h("button", { class: "btn btn-outline" }, "বাতিল");
@@ -311,14 +336,22 @@ function renderInfoTab(body, profile) {
   const shareUrl = hasUsername ? `${shareBase.replace(/\/$/, "")}/${profile.username}` : null;
 
   if (hasUsername) {
-    const urlRow = h("div", { class: "row" });
-    urlRow.appendChild(h("b", {}, "প্রোফাইল URL: "));
-    urlRow.appendChild(h("a", { href: shareUrl, style: "flex:1" }, shareUrl));
+    // min-width:0 lets this flex child actually shrink below its content
+    // width (flex items default to min-width:auto, which is what let the
+    // URL push the row wider than its card on narrow screens); the link
+    // itself truncates with an ellipsis instead of overflowing.
+    const urlRow = h("div", { class: "row", style: "min-width:0" });
+    urlRow.appendChild(h("b", { style: "flex-shrink:0" }, "প্রোফাইল URL: "));
+    urlRow.appendChild(h("a", { href: shareUrl, style: "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, shareUrl));
     const copyBtn = h("button", { type: "button", class: "btn-icon", title: "কপি করুন", onclick: () => { navigator.clipboard?.writeText(shareUrl); toast("লিংক কপি হয়েছে"); } }, icon("copy", "small"));
     const editBtn = h("button", { type: "button", class: "btn-icon", title: "ইউজারনেইম পরিবর্তন করুন", onclick: () => toggleUsernameEditor(card, profile) }, icon("pencil", "small"));
     urlRow.appendChild(copyBtn);
     urlRow.appendChild(editBtn);
     card.appendChild(urlRow);
+    // Hidden by default - shown below the URL row when the pencil icon is
+    // clicked (see toggleUsernameEditor), rather than appearing anywhere
+    // else on the page.
+    card.appendChild(h("div", { id: "usernameEditorSlot" }));
   }
 
   if (profile.addressSummary) card.appendChild(h("div", {}, [h("b", {}, "সংক্ষিপ্ত ঠিকানা: "), profile.addressSummary]));
@@ -362,7 +395,12 @@ function renderInfoTab(body, profile) {
 }
 
 function toggleUsernameEditor(card, profile) {
-  const wrap = card.lastChild; // the usernameEditorWrap placeholder appended in renderInfoTab
+  // Fixed slot placed directly after the URL row (see renderInfoTab) - was
+  // previously card.lastChild, which meant "wherever the card's rendering
+  // happened to end", landing at the bottom of the whole info card below
+  // address/donation-date/location/eligibility instead of right under the
+  // URL row where the pencil icon that opens it actually lives.
+  const wrap = card.querySelector("#usernameEditorSlot");
   if (wrap.style.display === "block") { wrap.style.display = "none"; wrap.innerHTML = ""; return; }
   wrap.innerHTML = "";
   wrap.style.display = "block";
@@ -372,6 +410,38 @@ function toggleUsernameEditor(card, profile) {
   wrap.appendChild(h("div", { class: "field", style: "margin-top:10px" }, [h("label", {}, "নতুন ইউজারনেইম"), slugField, hint]));
   wrap.appendChild(updateBtn);
   enterSubmits(slugField, updateBtn);
+
+  // Live availability feedback as the person types, debounced so it isn't
+  // firing a request on every keystroke - matches the spec's example
+  // phrasing exactly ("'rashed' ইউজারনেইমটি এভেইলেবল আছে").
+  let checkTimer = null;
+  let lastCheckedValue = null;
+  slugField.addEventListener("input", () => {
+    clearTimeout(checkTimer);
+    const val = slugField.value.trim();
+    if (!val) { hint.textContent = ""; hint.className = "field-hint"; return; }
+    hint.textContent = "যাচাই করা হচ্ছে…";
+    hint.className = "field-hint";
+    checkTimer = setTimeout(async () => {
+      if (slugField.value.trim() !== val) return; // stale - user kept typing
+      try {
+        const res = await API.get(`/api/profile/username/check?slug=${encodeURIComponent(val)}`);
+        if (slugField.value.trim() !== val) return; // stale by the time the response arrived
+        lastCheckedValue = val;
+        if (res.available) {
+          hint.textContent = `'${val}' ইউজারনেইমটি এভেইলেবল আছে।`;
+          hint.className = "field-hint field-hint--ok";
+        } else {
+          hint.textContent = `'${val}' ইউজারনেইমটি এভেইলেবল নেই।`;
+          hint.className = "field-error";
+        }
+      } catch {
+        hint.textContent = "";
+        hint.className = "field-hint";
+      }
+    }, 500);
+  });
+
   updateBtn.onclick = async () => {
     const newSlug = slugField.value.trim();
     if (!newSlug) return;
@@ -393,9 +463,11 @@ function toggleUsernameEditor(card, profile) {
 async function renderDonationsTab(body, profile) {
   const { donations, extraCount } = await API.get("/api/profile/donations");
   const card = h("div", { class: "card stack" });
-  donations.forEach((d) => card.appendChild(h("div", { class: "list-item" }, [
-    h("span", {}, bnDate(d.donation_date)), h("span", { class: "muted" }, d.hospital_name || ""),
-  ])));
+  // Backend already orders donation_date DESC, id DESC (NULLs/undated last
+  // in SQLite's default ordering), so no re-sort needed here - dated
+  // entries appear first, undated-but-remembered-hospital entries below
+  // them with a dash standing in for the date.
+  donations.forEach((d) => card.appendChild(renderDonationListItem(d, body, profile)));
   if (extraCount > 0) card.appendChild(h("p", { class: "muted small" }, `…এবং আরো ${toBnDigits(extraCount)} বার`));
   if (!donations.length && !extraCount) card.appendChild(h("p", { class: "muted" }, "কোনো তথ্য নেই"));
   body.appendChild(card);
@@ -408,6 +480,7 @@ async function renderDonationsTab(body, profile) {
   // once তারিখ is marked মনে নেই - the "আরো রয়েছে" follow-up beneath তারিখ,
   // which itself hides হাসপাতালের নাম while checked.
   const dateField = h("input", { type: "date", max: todayIsoDate() });
+  enforceDateBound(dateField, todayIsoDate(), "max", "ভবিষ্যতের তারিখ নির্বাচন করা যাবে না");
   const dateUnknownCb = h("input", { type: "checkbox", id: "donDateUnknownCb" });
   addCard.appendChild(h("div", { class: "field-row-with-checkbox" }, [
     h("div", { class: "field", style: "flex:1" }, [h("label", {}, "তারিখ"), dateField]),
@@ -482,14 +555,146 @@ async function refreshDonationCounter() {
   } catch { /* non-fatal */ }
 }
 
+// Single donation row with an edit/delete affordance. Undated-but-
+// hospital-remembered entries show a dash in place of the date (backend
+// already sorts these below dated entries).
+function renderDonationListItem(d, body, profile) {
+  const row = h("div", { class: "list-item" });
+  const dateLabel = d.donation_date ? bnDate(d.donation_date) : "—";
+  const textSpan = h("span", {}, [dateLabel, d.hospital_name ? h("span", { class: "muted" }, ` · ${d.hospital_name}`) : null]);
+  row.appendChild(textSpan);
+
+  const actions = h("div", { class: "list-item__actions" });
+  const editBtn = h("button", { type: "button", class: "btn-icon", title: "সম্পাদনা করুন", onclick: () => toggleDonationEditor(row, d, body, profile) }, icon("pencil", "small"));
+  const deleteBtn = h("button", { type: "button", class: "btn-icon", title: "ডিলিট করুন", onclick: async () => {
+    if (!confirm("এই এন্ট্রিটি ডিলিট করতে চান?")) return;
+    try {
+      await API.del(`/api/profile/donations/${d.id}`);
+      toast("ডিলিট করা হয়েছে");
+      body.innerHTML = "";
+      renderDonationsTab(body, profile);
+    } catch (e) { toast(e.message); }
+  } }, icon("trash-2", "small"));
+  actions.appendChild(editBtn);
+  actions.appendChild(deleteBtn);
+  row.appendChild(actions);
+  return row;
+}
+
+function toggleDonationEditor(row, d, body, profile) {
+  const existing = row.querySelector(".donation-editor");
+  if (existing) { existing.remove(); return; }
+  const editor = h("div", { class: "donation-editor stack", style: "margin-top:10px;width:100%" });
+  const dateField = h("input", { type: "date", max: todayIsoDate() });
+  enforceDateBound(dateField, todayIsoDate(), "max", "ভবিষ্যতের তারিখ নির্বাচন করা যাবে না");
+  if (d.donation_date) dateField.value = d.donation_date;
+  const hospField = h("input", { type: "text", placeholder: "হাসপাতালের নাম" });
+  if (d.hospital_name) hospField.value = d.hospital_name;
+  editor.appendChild(h("div", { class: "field" }, [h("label", {}, "তারিখ"), dateField]));
+  editor.appendChild(h("div", { class: "field" }, [h("label", {}, "হাসপাতালের নাম"), hospField]));
+  const saveBtn = h("button", { class: "btn btn-primary" }, "সংরক্ষণ করুন");
+  editor.appendChild(saveBtn);
+  saveBtn.onclick = async () => {
+    try {
+      await API.put(`/api/profile/donations/${d.id}`, {
+        date: dateField.value || null,
+        dateUnknown: !dateField.value,
+        hospitalName: hospField.value || null,
+        hospitalUnknown: !hospField.value,
+      });
+      toast("পরিবর্তন সংরক্ষণ করা হয়েছে");
+      body.innerHTML = "";
+      renderDonationsTab(body, profile);
+    } catch (e) { toast(e.message); }
+  };
+  row.appendChild(editor);
+}
+
+// Profile tab's own "calls" section - RECEIVED calls only, last 5, with
+// aggregate counters above the list.
 async function renderProfileCallsTab(body, isSelf) {
-  const { received, made } = await API.get("/api/calls/history");
+  const data = await API.get("/api/calls/received-summary");
+  const summaryCard = h("div", { class: "card stack" });
+  summaryCard.appendChild(h("div", {}, [h("b", {}, "সর্বমোট কল করেছেন: "), `${toBnDigits(data.totalCallsMade)} বার`]));
+  summaryCard.appendChild(h("div", {}, [h("b", {}, "সর্বমোট কল ষ্ট্যাটাস আপডেট করেন নি: "), `${toBnDigits(data.totalNotUpdated)} বার`]));
+  summaryCard.appendChild(h("div", {}, [h("b", {}, "সর্বমোট কল রিসিভ করেছেন: "), `${toBnDigits(data.totalCallsReceived)} বার`]));
+  summaryCard.appendChild(h("div", {}, [h("b", {}, "সর্বমোট কল রিসিভ করেননি: "), `${toBnDigits(data.totalNotPickedUp)} বার`]));
+  body.appendChild(summaryCard);
+
   const card = h("div", { class: "card stack" });
-  if (!received.length && !made.length) card.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
-  [...received, ...made].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)).forEach((c) => {
-    card.appendChild(h("div", { class: "list-item" }, h("span", {}, [personLink(c.personLabel, c.slug), " " + c.suffixText])));
-  });
+  if (!data.calls.length) card.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
+  data.calls.forEach((c) => card.appendChild(renderCallHistoryRow(c, body)));
   body.appendChild(card);
+}
+
+// Site-wide /calls page - full history, both directions, newest first,
+// with date+time and an "আপডেট করুন" action on entries never updated.
+async function renderFullCallHistory(body) {
+  const { calls } = await API.get("/api/calls/history");
+  const card = h("div", { class: "card stack" });
+  if (!calls.length) card.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
+  calls.forEach((c) => card.appendChild(renderCallHistoryRow(c, body, true)));
+  body.appendChild(card);
+}
+
+function renderCallHistoryRow(c, body, allowUpdate) {
+  const row = h("div", { class: "list-item list-item--stacked" });
+  // Both parties individually hyperlinked, per spec: "requester (মাস্কড)
+  // কল করেছিলো donor (মাস্কড) কে। ষ্ট্যাটাস: ..."
+  const line = h("div", {}, [
+    personLink(c.requesterLabel, c.requesterSlug),
+    " কল করেছিলো ",
+    personLink(c.donorLabel, c.donorSlug),
+    " কে। ",
+    c.statusText,
+  ]);
+  row.appendChild(line);
+  row.appendChild(h("div", { class: "small muted" }, bnDateTime(c.createdAt)));
+  if (allowUpdate && c.status === "pending") {
+    const updateBtn = h("button", { class: "btn btn-outline btn-sm", style: "margin-top:6px" }, "আপডেট করুন");
+    updateBtn.onclick = () => renderInlineStatusUpdate(row, c, body);
+    row.appendChild(updateBtn);
+  }
+  return row;
+}
+
+const CALL_STATUS_OPTIONS = [
+  { key: "no_answer", label: "কল যাচ্ছে না" },
+  { key: "not_picked_up", label: "কল ধরেনি" },
+  { key: "cannot_donate", label: "রক্ত দিতে পারবে না" },
+  { key: "can_donate", label: "রক্ত দিতে পারবে" },
+];
+const CALL_CANNOT_REASONS = [
+  { key: "not_yet_eligible", label: "রক্ত দেওয়ার সময় হয়নি" },
+  { key: "far_away", label: "দূরে আছেন" },
+  { key: "busy_today", label: "আজকে ব্যস্ত" },
+  { key: "no_reason_given", label: "কারণ জানান নি" },
+];
+
+function renderInlineStatusUpdate(row, c, body) {
+  const existing = row.querySelector(".inline-status-update");
+  if (existing) { existing.remove(); return; }
+  const wrap = h("div", { class: "inline-status-update stack", style: "margin-top:8px" });
+  CALL_STATUS_OPTIONS.forEach((opt) => {
+    wrap.appendChild(h("button", { class: "btn btn-outline btn-sm", onclick: () => submitInlineStatus(wrap, c, opt.key, null, body) }, opt.label));
+  });
+  row.appendChild(wrap);
+}
+
+async function submitInlineStatus(wrap, c, status, cannotReason, body) {
+  if (status === "cannot_donate" && !cannotReason) {
+    wrap.innerHTML = "";
+    CALL_CANNOT_REASONS.forEach((r) => {
+      wrap.appendChild(h("button", { class: "btn btn-outline btn-sm", onclick: () => submitInlineStatus(wrap, c, status, r.key, body) }, r.label));
+    });
+    return;
+  }
+  try {
+    await API.post("/api/seek/call-status", { callId: c.id, status, cannotReason });
+    toast("ষ্ট্যাটাস সংরক্ষণ করা হয়েছে");
+    body.innerHTML = "";
+    renderFullCallHistory(body);
+  } catch (e) { toast(e.message); }
 }
 
 function renderOtherTab(body, profile) {
@@ -535,13 +740,31 @@ ViewsAccount.profileEdit = async function (view) {
 
   const picPreview = h("img", { class: "donor-card__pic", src: profile.profilePicUrl || pickDefaultAvatar(), alt: "", style: "margin:0 0 10px" });
   const picInput = h("input", { type: "file", accept: "image/*" });
-  card.appendChild(h("div", { class: "center" }, [picPreview, picInput]));
+  const picRemoveBtn = h("button", { type: "button", class: "btn-icon", title: "ছবি সরান", style: profile.profilePicUrl ? "" : "display:none" }, icon("trash-2", "small"));
+  card.appendChild(h("div", { class: "center" }, [picPreview, picInput, picRemoveBtn]));
   let picBase64 = null;
+  let removePic = false;
   picInput.onchange = async () => {
     if (picInput.files[0]) {
-      picBase64 = await fileToBase64(picInput.files[0]);
-      picPreview.src = URL.createObjectURL(picInput.files[0]);
+      // Downscale/compress client-side before it ever becomes base64 -
+      // otherwise a full-resolution phone photo (often several MB) can
+      // exceed the request size the Worker will accept, which previously
+      // failed completely silently (see readJson's fix in util.js) and
+      // looked exactly like "the image isn't uploading" with no visible
+      // cause. Capping the longest side at 800px keeps a profile picture
+      // plenty sharp while keeping the payload small and reliable.
+      picBase64 = await downscaleImageToBase64(picInput.files[0], 800);
+      picPreview.src = "data:image/jpeg;base64," + picBase64;
+      removePic = false;
+      picRemoveBtn.style.display = "";
     }
+  };
+  picRemoveBtn.onclick = () => {
+    removePic = true;
+    picBase64 = null;
+    picInput.value = "";
+    picPreview.src = pickDefaultAvatar();
+    picRemoveBtn.style.display = "none";
   };
 
   const nameField = h("input", { type: "text" }); nameField.value = profile.name || "";
@@ -551,6 +774,7 @@ ViewsAccount.profileEdit = async function (view) {
   if (profile.isDonor) card.appendChild(h("div", { class: "field" }, [h("label", {}, "রক্তের গ্রুপ"), bloodGroupGrid(bloodGroup, (g) => (bloodGroup = g))]));
 
   const dateField = h("input", { type: "date", max: todayIsoDate() }); dateField.value = profile.lastDonationDate || "";
+  enforceDateBound(dateField, todayIsoDate(), "max", "ভবিষ্যতের তারিখ নির্বাচন করা যাবে না");
   if (profile.isDonor) card.appendChild(h("div", { class: "field" }, [h("label", {}, "সর্বশেষ রক্তদানের তারিখ"), dateField]));
 
   const locSelect = h("select");
@@ -564,6 +788,15 @@ ViewsAccount.profileEdit = async function (view) {
   const noteField = h("textarea", { placeholder: "খালি রাখতে পারেন" }); noteField.value = profile.note || "";
   if (profile.isDonor) card.appendChild(h("div", { class: "field" }, [h("label", {}, "নোট"), noteField]));
 
+  // Public profile layout preference - tab view (default) shows one
+  // section at a time behind a tab strip; list view stacks every section
+  // as its own card, one below another.
+  const viewSelect = h("select");
+  viewSelect.appendChild(h("option", { value: "tabs" }, "ট্যাব ভিউ"));
+  viewSelect.appendChild(h("option", { value: "list" }, "লিষ্ট ভিউ"));
+  viewSelect.value = profile.publicProfileView || "tabs";
+  card.appendChild(h("div", { class: "field" }, [h("label", {}, "পাবলিক প্রোফাইলের লেআউট"), viewSelect]));
+
   const saveBtn = h("button", { class: "btn btn-primary" }, "সংরক্ষণ করুন");
   card.appendChild(saveBtn);
   view.appendChild(card);
@@ -571,9 +804,10 @@ ViewsAccount.profileEdit = async function (view) {
   saveBtn.onclick = async () => {
     saveBtn.disabled = true;
     try {
-      const payload = { name: nameField.value, addressSummary: addrField.value, locationId: locSelect.value || null };
+      const payload = { name: nameField.value, addressSummary: addrField.value, locationId: locSelect.value || null, publicProfileView: viewSelect.value };
       if (profile.isDonor) { payload.bloodGroup = bloodGroup; payload.lastDonationDate = dateField.value || null; payload.note = noteField.value; }
-      if (picBase64) payload.profilePicBase64 = picBase64;
+      if (picBase64) { payload.profilePicBase64 = picBase64; payload.profilePicFileName = picInput.files[0] ? picInput.files[0].name : undefined; }
+      if (removePic) payload.removeProfilePic = true;
       await API.put("/api/profile/edit", payload);
       toast("প্রোফাইল আপডেট হয়েছে");
       navigate("/profile");
@@ -585,7 +819,11 @@ ViewsAccount.profileEdit = async function (view) {
 ViewsAccount.profilePrivacy = async function (view) {
   const { profile } = await API.get("/api/profile/me");
   view.innerHTML = "";
-  view.appendChild(h("h2", {}, "প্রোফাইল তথ্যের গোপনীয়তা সেটিংস"));
+  const headerRow = h("div", { class: "row", style: "justify-content:space-between;align-items:center" });
+  headerRow.appendChild(h("h2", {}, "প্রোফাইল তথ্যের গোপনীয়তা সেটিংস"));
+  const resetBtn = h("button", { class: "btn btn-outline btn-sm" }, "ডিফল্টে রিসেট করুন");
+  headerRow.appendChild(resetBtn);
+  view.appendChild(headerRow);
   view.appendChild(h("p", { class: "muted small" }, "নাম ও ইউজারনেইম সবসময় পাবলিক থাকবে।"));
 
   // Fields allowing "শুধুমাত্র রোগী" (visible only inside the active /seek
@@ -627,6 +865,19 @@ ViewsAccount.profilePrivacy = async function (view) {
     try { await API.put("/api/profile/visibility", { visibility }); toast("সংরক্ষণ করা হয়েছে"); }
     catch (e) { toast(e.message); }
   };
+
+  // Applies immediately (not just staged in the form) - re-fetches the
+  // saved defaults and re-renders the whole page so the selects visibly
+  // reflect the reset right away, matching "will change all fields to the
+  // default settings and will apply those settings immediately".
+  resetBtn.onclick = async () => {
+    if (!confirm("গোপনীয়তা সেটিংস ডিফল্টে রিসেট করতে চান?")) return;
+    try {
+      await API.put("/api/profile/visibility", { reset: true });
+      toast("ডিফল্টে রিসেট করা হয়েছে");
+      ViewsAccount.profilePrivacy(view);
+    } catch (e) { toast(e.message); }
+  };
 };
 
 // -------------------------------------------------------------------- CALLS
@@ -635,7 +886,7 @@ ViewsAccount.calls = async function (view) {
   view.appendChild(h("h2", {}, "কল হিষ্ট্রি"));
   const body = h("div");
   view.appendChild(body);
-  await renderProfileCallsTab(body, true);
+  await renderFullCallHistory(body);
 };
 
 // ----------------------------------------------------------------- SETTINGS

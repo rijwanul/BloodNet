@@ -22,6 +22,19 @@ export async function handleDonorStatus(request, env) {
   });
 }
 
+// Persists dismissing the call-status banner on /quick, server-side -
+// previously this only removed the DOM node, so the banner reappeared on
+// the very next refresh even though the donor had already acknowledged
+// it. Clearing the column is safe here since nothing else reads
+// last_eligibility_change_note as a source of truth for eligibility
+// itself (it's purely a display note).
+export async function handleDismissEligibilityNote(request, env) {
+  const user = await getCurrentUser(request, env);
+  if (!requireDonor(user)) return err("লগইন অথবা ডোনার একাউন্ট প্রয়োজন", 401);
+  await env.DB.prepare("UPDATE users SET last_eligibility_change_note = NULL WHERE id = ?").bind(user.id).run();
+  return ok({ dismissed: true });
+}
+
 const SNOOZE_PRESETS = {
   today: () => {
     const d = new Date();

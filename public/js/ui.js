@@ -96,6 +96,39 @@ async function fileToBase64(file) {
   });
 }
 
+// Loads an image file into a canvas, downsizes it so its longest side is
+// at most maxDim pixels (upload-size images are never enlarged, only
+// shrunk), and returns raw base64 JPEG data (no data: prefix). Used before
+// profile-picture uploads so a full-resolution phone photo doesn't risk
+// exceeding the Worker's request size limit, which previously failed
+// completely silently.
+async function downscaleImageToBase64(file, maxDim) {
+  const dataUrl = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+  const img = await new Promise((resolve, reject) => {
+    const el = new Image();
+    el.onload = () => resolve(el);
+    el.onerror = reject;
+    el.src = dataUrl;
+  });
+  let { width, height } = img;
+  if (width > maxDim || height > maxDim) {
+    const scale = maxDim / Math.max(width, height);
+    width = Math.round(width * scale);
+    height = Math.round(height * scale);
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+  const jpegDataUrl = canvas.toDataURL("image/jpeg", 0.85);
+  return jpegDataUrl.split(",")[1] || "";
+}
+
 const BN_DIGITS = ["০", "১", "২", "৩", "৪", "৫", "৬", "৭", "৮", "৯"];
 function toBnDigits(n) {
   return String(n).replace(/[0-9]/g, (d) => BN_DIGITS[+d]);
@@ -104,11 +137,35 @@ function toBnDigits(n) {
 // Site-wide date format: DD/MM/YYYY (with Bengali digits).
 function bnDate(iso) {
   if (!iso) return "";
-  const d = new Date(iso.length === 10 ? iso + "T00:00:00" : iso.replace(" ", "T"));
+  // A plain 10-char date ("2026-08-19") has no time component and is
+  // genuinely timezone-free (a donation date, a snooze-until DATE), so it's
+  // parsed as local midnight on purpose - there's no "correct" UTC reading
+  // of a bare date. A full timestamp ("2026-08-19 14:30:00"), however, is
+  // always stored as UTC with no "Z" marker (see nowIso()) - appending "Z"
+  // here is required, otherwise the browser parses it as LOCAL time and
+  // every displayed date/time silently drifts by the browser's UTC offset
+  // (the same class of bug that broke the ২/৬ ঘন্টা snooze countdown).
+  const d = new Date(iso.length === 10 ? iso + "T00:00:00" : iso.replace(" ", "T") + "Z");
   const dd = String(d.getDate()).padStart(2, "0");
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const yyyy = d.getFullYear();
   return toBnDigits(`${dd}/${mm}/${yyyy}`);
+}
+
+// Same as bnDate but also shows the time, in the requester's local
+// timezone (e.g. "১৯/০৮/২০২৬, ০৮:৪৫ PM") - used for call-history entries
+// where the exact time matters, not just the day.
+function bnDateTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso.length === 10 ? iso + "T00:00:00" : iso.replace(" ", "T") + "Z");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  let hours = d.getHours();
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  const ampm = hours >= 12 ? "PM" : "AM";
+  hours = hours % 12 || 12;
+  return toBnDigits(`${dd}/${mm}/${yyyy}, ${String(hours).padStart(2, "0")}:${minutes} `) + ampm;
 }
 
 // Bengali duration formatter for countdowns, e.g.:
@@ -273,6 +330,25 @@ function todayIsoDate() {
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+// The `min`/`max` attributes on <input type="date"> only constrain the
+// browser's OWN picker UI - a person can still type an out-of-range date
+// directly on the keyboard and the browser will accept it. This enforces
+// the same bound in JS on blur/change, clearing the field and toasting if
+// it's violated, so typing around the picker no longer works either.
+// direction: "max" rejects dates AFTER the bound, "min" rejects dates BEFORE it.
+function enforceDateBound(field, boundIso, direction, message) {
+  const check = () => {
+    if (!field.value) return;
+    const violated = direction === "max" ? field.value > boundIso : field.value < boundIso;
+    if (violated) {
+      field.value = "";
+      toast(message);
+    }
+  };
+  field.addEventListener("change", check);
+  field.addEventListener("blur", check);
 }
 
 // Picks a stable-per-profile-picture-slot random default avatar from the

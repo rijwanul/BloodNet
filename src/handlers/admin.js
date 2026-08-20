@@ -1,5 +1,5 @@
-import { ok, err, readJson, isValidBdMobile, isValidBloodGroup, hashPassword, nowIso } from "../lib/util.js";
-import { getSettings, setSettings } from "../lib/settings.js";
+import { ok, err, readJson, isValidBdMobile, isValidBloodGroup, isValidUsernameSlug, hashPassword, nowIso, genUniqueRandomSlug, getReservedSlugSet } from "../lib/util.js";
+import { getSettings, setSettings, settingInt } from "../lib/settings.js";
 import { getCurrentUser } from "../lib/authctx.js";
 import { hasPermission, isAnyAdmin, PERMISSIONS } from "../lib/permissions.js";
 import { logActivity } from "../lib/activity.js";
@@ -81,16 +81,18 @@ export async function handleUserCreate(request, env) {
 
   const passwordHash = await hashPassword(password);
   const mustChange = body.requireChangeOnLogin ? 1 : 0;
+  const reserved = await getReservedSlugSet(env.DB);
+  const randomSlug = await genUniqueRandomSlug(env.DB, reserved);
   const res = await env.DB
     .prepare(
-      "INSERT INTO users (mobile, password_hash, name, is_donor, blood_group, must_change_password, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO users (mobile, password_hash, name, is_donor, blood_group, must_change_password, username_slug, username_display, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
-    .bind(mobile, passwordHash, body.name || null, body.isDonor ? 1 : 0, isValidBloodGroup(body.bloodGroup) ? body.bloodGroup : null, mustChange, nowIso(), nowIso())
+    .bind(mobile, passwordHash, body.name || null, body.isDonor ? 1 : 0, isValidBloodGroup(body.bloodGroup) ? body.bloodGroup : null, mustChange, randomSlug.toLowerCase(), randomSlug, nowIso(), nowIso())
     .run();
 
   const settings = await getSettings(env.DB);
   const { sendNotificationSms, fillTemplate } = await import("../lib/sms.js");
-  const msg = fillTemplate(settings.sms_account_created_import, { password });
+  const msg = fillTemplate(settings.sms_account_created_import, { password }, settings);
   await sendNotificationSms(env.DB, settings, mobile, msg, "account_created_import");
 
   await logActivity(env.DB, { actorUser: admin, category: "admin", actionText: `নতুন ইউজার তৈরি করেছেন: ${mobile}` });
@@ -116,6 +118,43 @@ export async function handleUserUpdate(request, env, id) {
     fields.push("permissions_json = ?");
     values.push(JSON.stringify(valid));
   }
+  // Admin editing username: same reserved-word + uniqueness rules as a
+  // donor claiming their own, so an admin can't accidentally hand out a
+  // reserved app path either.
+  if (typeof body.username === "string" && body.username.trim()) {
+    const slug = body.username.trim();
+    if (!isValidUsernameSlug(slug)) return err("ইউজারনেইম অবৈধ (৩-৩২ অক্ষর, শুধু a-z, 0-9, _, -)");
+    const reserved = await getReservedSlugSet(env.DB);
+    if (reserved.has(slug.toLowerCase())) return err("এই ইউজারনেইমটি ব্যবহার করা যাচ্ছে না");
+    const taken = await env.DB.prepare("SELECT id FROM users WHERE LOWER(username_slug) = LOWER(?) AND id != ?").bind(slug, id).first();
+    if (taken) return err("এই ইউজারনেইম ইতিমধ্যে ব্যবহৃত হচ্ছে");
+    fields.push("username_slug = ?", "username_display = ?");
+    values.push(slug.toLowerCase(), slug);
+  }
+  // Admin editing mobile: same uniqueness rule mobile always has.
+  if (typeof body.mobile === "string" && body.mobile.trim() && body.mobile.trim() !== target.mobile) {
+    const mobile = body.mobile.trim();
+    if (!isValidBdMobile(mobile)) return err("সঠিক মোবাইল নাম্বার দিন");
+    const taken = await env.DB.prepare("SELECT id FROM users WHERE mobile = ? AND id != ?").bind(mobile, id).first();
+    if (taken) return err("এই মোবাইল নাম্বার ইতিমধ্যে ব্যবহৃত হচ্ছে");
+    fields.push("mobile = ?");
+    values.push(mobile);
+  }
+  // Availability/eligibility - admin override. Setting to "on" or "off"
+  // clears any snooze; "snoozed" without a date defaults to the site's
+  // eligibility wait timeline, same as a normal call-triggered snooze.
+  if (body.eligibilityStatus === "on" || body.eligibilityStatus === "off") {
+    fields.push("eligibility_status = ?", "eligibility_snooze_until = ?", "eligibility_snooze_reason = ?");
+    values.push(body.eligibilityStatus, null, null);
+  } else if (body.eligibilityStatus === "snoozed") {
+    const settings = await getSettings(env.DB);
+    const waitMonths = settingInt(settings, "eligibility_wait_months", 3);
+    const until = new Date();
+    until.setMonth(until.getMonth() + Math.max(1, waitMonths || 3));
+    fields.push("eligibility_status = ?", "eligibility_snooze_until = ?", "eligibility_snooze_reason = ?");
+    values.push("snoozed", until.toISOString().replace("T", " ").slice(0, 19), "এডমিন কর্তৃক স্থগিত");
+  }
+  if (body.disabled !== undefined && !target.is_root_admin) { fields.push("disabled = ?"); values.push(body.disabled ? 1 : 0); }
   if (!fields.length) return err("কোনো পরিবর্তন পাওয়া যায়নি");
   fields.push("updated_at = ?");
   values.push(nowIso(), id);
@@ -130,7 +169,15 @@ export async function handleUserDelete(request, env, id) {
   const target = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
   if (!target) return err("ইউজার পাওয়া যায়নি", 404);
   if (target.is_root_admin) return err("রুট অ্যাডমিন ডিলিট করা যাবে না", 403);
-  await env.DB.prepare("UPDATE users SET deleted = 1, updated_at = ? WHERE id = ?").bind(nowIso(), id).run();
+  // Soft-delete keeps the row (for activity-log/call-history references) but
+  // frees up the mobile number for reuse - mobile is UNIQUE, so without
+  // this a deleted account permanently blocks anyone (including the same
+  // person) from ever signing up again with that number, which is exactly
+  // the "UNIQUE constraint failed" bug reported. The freed value keeps the
+  // original number readable for admin/audit purposes via a suffix rather
+  // than discarding it outright.
+  const freedMobile = `deleted_${target.id}`;
+  await env.DB.prepare("UPDATE users SET deleted = 1, mobile = ?, username_slug = NULL, updated_at = ? WHERE id = ?").bind(freedMobile, nowIso(), id).run();
   await logActivity(env.DB, { actorUser: admin, category: "admin", actionText: `ইউজার ডিলিট করেছেন: ${target.mobile}` });
   return ok({ deleted: true });
 }
@@ -146,7 +193,19 @@ export async function handleUserBulkAction(request, env) {
   let generatedPassword = null;
 
   if (action === "delete") {
-    await env.DB.prepare(`UPDATE users SET deleted = 1, updated_at = ? WHERE id IN (${placeholders}) AND is_root_admin = 0`).bind(nowIso(), ...ids).run();
+    // Same mobile-freeing rationale as handleUserDelete above - done as a
+    // per-row UPDATE (not a single bulk UPDATE) since each row needs its
+    // own unique freed-mobile suffix.
+    const { results: targets } = await env.DB
+      .prepare(`SELECT id, mobile FROM users WHERE id IN (${placeholders}) AND is_root_admin = 0`)
+      .bind(...ids)
+      .all();
+    for (const t of targets) {
+      await env.DB
+        .prepare("UPDATE users SET deleted = 1, mobile = ?, username_slug = NULL, updated_at = ? WHERE id = ?")
+        .bind(`deleted_${t.id}`, nowIso(), t.id)
+        .run();
+    }
   } else if (action === "enable") {
     await env.DB.prepare(`UPDATE users SET disabled = 0, updated_at = ? WHERE id IN (${placeholders})`).bind(nowIso(), ...ids).run();
   } else if (action === "disable") {
@@ -165,7 +224,7 @@ export async function handleUserBulkAction(request, env) {
     const settings = await getSettings(env.DB);
     const { sendNotificationSms, fillTemplate } = await import("../lib/sms.js");
     const { results: targets } = await env.DB.prepare(`SELECT mobile FROM users WHERE id IN (${placeholders})`).bind(...ids).all();
-    const msg = fillTemplate(settings.sms_password_reset_by_admin, { password: newPassword });
+    const msg = fillTemplate(settings.sms_password_reset_by_admin, { password: newPassword }, settings);
     for (const t of targets) {
       await sendNotificationSms(env.DB, settings, t.mobile, msg, "password_reset");
     }
@@ -198,6 +257,7 @@ export async function handleUsersImport(request, env) {
   const errors = [];
   const settings = await getSettings(env.DB);
   const { sendNotificationSms, fillTemplate } = await import("../lib/sms.js");
+  const reserved = await getReservedSlugSet(env.DB);
 
   for (const row of rows) {
     const mobile = (row.mobile || "").trim();
@@ -206,13 +266,14 @@ export async function handleUsersImport(request, env) {
     if (existing) { errors.push(`${mobile}: ইতিমধ্যে আছে`); continue; }
     const password = row.password || Math.random().toString(36).slice(2, 10);
     const passwordHash = await hashPassword(password);
+    const randomSlug = await genUniqueRandomSlug(env.DB, reserved);
     await env.DB
       .prepare(
-        "INSERT INTO users (mobile, password_hash, name, blood_group, is_donor, must_change_password, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO users (mobile, password_hash, name, blood_group, is_donor, must_change_password, username_slug, username_display, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       )
-      .bind(mobile, passwordHash, row.name || null, isValidBloodGroup(row.bloodGroup) ? row.bloodGroup : null, row.isDonor === "1" || row.isDonor === "true" ? 1 : 0, requireChangeOnLogin ? 1 : 0, nowIso(), nowIso())
+      .bind(mobile, passwordHash, row.name || null, isValidBloodGroup(row.bloodGroup) ? row.bloodGroup : null, row.isDonor === "1" || row.isDonor === "true" ? 1 : 0, requireChangeOnLogin ? 1 : 0, randomSlug.toLowerCase(), randomSlug, nowIso(), nowIso())
       .run();
-    const msg = fillTemplate(settings.sms_account_created_import, { password });
+    const msg = fillTemplate(settings.sms_account_created_import, { password }, settings);
     await sendNotificationSms(env.DB, settings, mobile, msg, "account_created_import");
     created++;
   }
@@ -251,6 +312,8 @@ export async function handleSmsSettingsGet(request, env) {
     sms_account_created_import: settings.sms_account_created_import,
     sms_otp: settings.sms_otp,
     sms_password_reset_by_admin: settings.sms_password_reset_by_admin,
+    sms_eligibility_change_by_call: settings.sms_eligibility_change_by_call,
+    sms_donation_reminder: settings.sms_donation_reminder,
     otp_test_mode: settings.otp_test_mode === "1",
     manual_otp: settings.manual_otp,
     greensms_api_key: settings.greensms_api_key,
@@ -258,6 +321,11 @@ export async function handleSmsSettingsGet(request, env) {
     sms_enabled_account_created_import: settings.sms_enabled_account_created_import !== "0",
     sms_enabled_otp: settings.sms_enabled_otp !== "0",
     sms_enabled_password_reset: settings.sms_enabled_password_reset !== "0",
+    sms_enabled_eligibility_change_by_call: settings.sms_enabled_eligibility_change_by_call !== "0",
+    sms_enabled_donation_reminder: settings.sms_enabled_donation_reminder !== "0",
+    sms_daily_limit_user_initiated: settings.sms_daily_limit_user_initiated || "3",
+    sms_daily_limit_system: settings.sms_daily_limit_system || "3",
+    sms_over_limit_otp_message: settings.sms_over_limit_otp_message || "আপনার দৈনিক এসএমএস লিমিট শেষ হয়েছে। 01883-600680 নাম্বারে কল করুন",
   });
 }
 
@@ -265,19 +333,21 @@ export async function handleSmsSettingsUpdate(request, env) {
   const { user: admin, resp } = await requirePerm(request, env, "manage_sms_settings");
   if (resp) return resp;
   const body = await readJson(request);
-  const allowed = ["sms_account_created_self", "sms_account_created_import", "sms_otp", "sms_password_reset_by_admin", "manual_otp", "greensms_api_key"];
+  const allowed = ["sms_account_created_self", "sms_account_created_import", "sms_otp", "sms_password_reset_by_admin", "sms_eligibility_change_by_call", "sms_donation_reminder", "manual_otp", "greensms_api_key", "sms_over_limit_otp_message"];
   const patch = {};
   for (const k of allowed) if (typeof body[k] === "string") patch[k] = body[k];
   if (body.otp_test_mode !== undefined) patch.otp_test_mode = body.otp_test_mode ? "1" : "0";
-  for (const k of ["sms_enabled_account_created_self", "sms_enabled_account_created_import", "sms_enabled_otp", "sms_enabled_password_reset"]) {
+  for (const k of ["sms_enabled_account_created_self", "sms_enabled_account_created_import", "sms_enabled_otp", "sms_enabled_password_reset", "sms_enabled_eligibility_change_by_call", "sms_enabled_donation_reminder"]) {
     if (body[k] !== undefined) patch[k] = body[k] ? "1" : "0";
   }
+  if (body.sms_daily_limit_user_initiated !== undefined) patch.sms_daily_limit_user_initiated = String(Math.max(0, parseInt(body.sms_daily_limit_user_initiated, 10) || 0));
+  if (body.sms_daily_limit_system !== undefined) patch.sms_daily_limit_system = String(Math.max(0, parseInt(body.sms_daily_limit_system, 10) || 0));
   await setSettings(env.DB, patch);
   await logActivity(env.DB, { actorUser: admin, category: "settings", actionText: "এসএমএস সেটিংস আপডেট করেছেন" });
   return ok({ updated: true });
 }
 
-const SMS_TEMPLATE_KEYS = ["sms_account_created_self", "sms_account_created_import", "sms_otp", "sms_password_reset_by_admin"];
+const SMS_TEMPLATE_KEYS = ["sms_account_created_self", "sms_account_created_import", "sms_otp", "sms_password_reset_by_admin", "sms_eligibility_change_by_call", "sms_donation_reminder"];
 
 export async function handleSmsTest(request, env) {
   const { user: admin, resp } = await requirePerm(request, env, "manage_sms_settings");
@@ -293,8 +363,9 @@ export async function handleSmsTest(request, env) {
     siteTitle: settings.site_title || "BloodNet v2",
     password: "test1234",
     otp: "123456",
+    status: "রক্ত দিতে পারবে না (দূরে আছেন)",
   };
-  const message = fillTemplate(settings[body.templateKey], sample);
+  const message = fillTemplate(settings[body.templateKey], sample, settings);
   // Test sends intentionally bypass the per-type on/off toggle (no typeKey
   // passed) so an admin can verify the gateway even while a category is
   // switched off for real traffic.
@@ -427,6 +498,8 @@ export async function handleSiteSettingsGet(request, env) {
     call_limit_minutes: settings.call_limit_minutes,
     donor_lock_minutes: settings.donor_lock_minutes,
     call_status_timer_seconds: settings.call_status_timer_seconds || "20",
+    mask_visible_digits: settings.mask_visible_digits || "4",
+    reserved_usernames: settings.reserved_usernames || "",
   });
 }
 
@@ -435,7 +508,7 @@ export async function handleSiteSettingsUpdate(request, env) {
   if (resp) return resp;
   const body = await readJson(request);
   const patch = {};
-  for (const k of ["site_title", "logo_url", "favicon_url", "social_preview_url", "theme_color", "welcome_heading", "welcome_subheading", "welcome_small_text", "profile_share_base_url", "default_avatars_json"]) {
+  for (const k of ["site_title", "logo_url", "favicon_url", "social_preview_url", "theme_color", "welcome_heading", "welcome_subheading", "welcome_small_text", "profile_share_base_url", "default_avatars_json", "reserved_usernames"]) {
     if (typeof body[k] === "string") patch[k] = body[k];
   }
   if (body.eligibility_wait_months !== undefined) patch.eligibility_wait_months = String(parseInt(body.eligibility_wait_months, 10) || 0);
@@ -447,6 +520,10 @@ export async function handleSiteSettingsUpdate(request, env) {
   if (body.otp_required_for_number_change !== undefined) patch.otp_required_for_number_change = body.otp_required_for_number_change ? "1" : "0";
   for (const k of ["call_limit_count", "call_limit_minutes", "donor_lock_minutes", "call_status_timer_seconds"]) {
     if (body[k] !== undefined) patch[k] = String(Math.max(1, parseInt(body[k], 10) || 1));
+  }
+  if (body.mask_visible_digits !== undefined) {
+    const digits = Math.max(2, Math.min(8, parseInt(body.mask_visible_digits, 10) || 4));
+    patch.mask_visible_digits = String(digits);
   }
   await setSettings(env.DB, patch);
   await logActivity(env.DB, { actorUser: admin, category: "settings", actionText: "সাইট সেটিংস আপডেট করেছেন" });
@@ -498,6 +575,8 @@ export async function handleActivityLog(request, env) {
   const url = new URL(request.url);
   const who = (url.searchParams.get("who") || "").trim();
   const category = (url.searchParams.get("category") || "").trim();
+  const dateFrom = (url.searchParams.get("dateFrom") || "").trim();
+  const dateTo = (url.searchParams.get("dateTo") || "").trim();
   const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
   const perPage = 50;
 
@@ -505,9 +584,134 @@ export async function handleActivityLog(request, env) {
   const binds = [];
   if (who) { query += " AND actor_label LIKE ?"; binds.push(`%${who}%`); }
   if (category) { query += " AND category = ?"; binds.push(category); }
+  // created_at is stored "YYYY-MM-DD HH:MM:SS" UTC - plain string comparison
+  // against a "YYYY-MM-DD" bound works correctly since that format sorts
+  // lexicographically the same as chronologically. dateTo is treated as
+  // inclusive of the whole day by comparing against the START of the NEXT
+  // day, so a person filtering "up to Aug 19" gets all of Aug 19 included.
+  if (dateFrom) { query += " AND created_at >= ?"; binds.push(dateFrom); }
+  if (dateTo) { query += " AND created_at < date(?, '+1 day')"; binds.push(dateTo); }
   query += " ORDER BY created_at DESC LIMIT ? OFFSET ?";
   binds.push(perPage, (page - 1) * perPage);
 
   const { results } = await env.DB.prepare(query).bind(...binds).all();
-  return ok({ entries: results, page });
+
+  let countQuery = "SELECT COUNT(*) as c FROM activity_log WHERE 1=1";
+  const countBinds = [];
+  if (who) { countQuery += " AND actor_label LIKE ?"; countBinds.push(`%${who}%`); }
+  if (category) { countQuery += " AND category = ?"; countBinds.push(category); }
+  if (dateFrom) { countQuery += " AND created_at >= ?"; countBinds.push(dateFrom); }
+  if (dateTo) { countQuery += " AND created_at < date(?, '+1 day')"; countBinds.push(dateTo); }
+  const countRow = await env.DB.prepare(countQuery).bind(...countBinds).first();
+
+  return ok({ entries: results, page, perPage, total: countRow.c, totalPages: Math.max(1, Math.ceil(countRow.c / perPage)) });
+}
+
+// Manual purge: deletes ALL activity log rows outright, or only rows older
+// than N days when olderThanDays is given (used by both the "ডিলিট করুন
+// সব" button and as the underlying logic the scheduled auto-purge below
+// reuses with a fixed cutoff).
+export async function handleActivityLogPurge(request, env) {
+  const { user: admin, resp } = await requirePerm(request, env, "view_activity_log");
+  if (resp) return resp;
+  const body = await readJson(request);
+  const olderThanDays = body.olderThanDays ? parseInt(body.olderThanDays, 10) : null;
+  let result;
+  if (olderThanDays && olderThanDays > 0) {
+    result = await env.DB.prepare("DELETE FROM activity_log WHERE created_at < datetime('now', ?)").bind(`-${olderThanDays} days`).run();
+  } else {
+    result = await env.DB.prepare("DELETE FROM activity_log").run();
+  }
+  // Deliberately logged AFTER the purge (this entry always survives) so
+  // there's always at least a record that a purge happened and by whom.
+  await logActivity(env.DB, {
+    actorUser: admin,
+    category: "admin",
+    actionText: olderThanDays ? `এক্টিভিটি লগ পার্জ করেছেন (${olderThanDays} দিনের পুরনো)` : "এক্টিভিটি লগ সম্পূর্ণ পার্জ করেছেন",
+  });
+  return ok({ purged: true, deletedCount: result.meta.changes });
+}
+
+export async function handleActivityLogPurgeScheduleGet(request, env) {
+  const { resp } = await requirePerm(request, env, "view_activity_log");
+  if (resp) return resp;
+  const settings = await getSettings(env.DB);
+  return ok({
+    enabled: settings.activity_log_auto_purge_enabled === "1",
+    olderThanDays: parseInt(settings.activity_log_auto_purge_days, 10) || 30,
+  });
+}
+
+export async function handleActivityLogPurgeScheduleUpdate(request, env) {
+  const { user: admin, resp } = await requirePerm(request, env, "view_activity_log");
+  if (resp) return resp;
+  const body = await readJson(request);
+  const patch = {};
+  if (body.enabled !== undefined) patch.activity_log_auto_purge_enabled = body.enabled ? "1" : "0";
+  if (body.olderThanDays !== undefined) {
+    const days = parseInt(body.olderThanDays, 10);
+    if (!Number.isFinite(days) || days < 1) return err("সঠিক সংখ্যক দিন দিন (কমপক্ষে ১)");
+    patch.activity_log_auto_purge_days = String(days);
+  }
+  await setSettings(env.DB, patch);
+  await logActivity(env.DB, { actorUser: admin, category: "settings", actionText: "এক্টিভিটি লগ অটো-পার্জ সেটিংস আপডেট করেছেন" });
+  return ok({ updated: true });
+}
+
+// -------------------------------------------------------- SMS ANALYTICS
+export async function handleSmsAnalyticsGet(request, env) {
+  const { resp } = await requirePerm(request, env, "view_activity_log");
+  if (resp) return resp;
+  const { results: current } = await env.DB
+    .prepare("SELECT mobile, name, sms_highest_daily_count, sms_highest_daily_date FROM users WHERE deleted = 0 AND sms_highest_daily_count > 0 ORDER BY sms_highest_daily_count DESC LIMIT 20")
+    .all();
+  const { results: history } = await env.DB
+    .prepare("SELECT mobile, count, record_date, reset_at FROM sms_daily_record_history ORDER BY reset_at DESC LIMIT 50")
+    .all();
+  return ok({ current, history });
+}
+
+// Manual reset - same archive-then-clear behaviour as the automatic
+// monthly sweep (runSmsDailyReset in scheduled.js), triggerable on demand.
+export async function handleSmsAnalyticsReset(request, env) {
+  const { user: admin, resp } = await requirePerm(request, env, "view_activity_log");
+  if (resp) return resp;
+  const { results } = await env.DB.prepare("SELECT id, mobile, sms_highest_daily_count, sms_highest_daily_date FROM users WHERE sms_highest_daily_count > 0").all();
+  for (const u of results) {
+    await env.DB
+      .prepare("INSERT INTO sms_daily_record_history (mobile, count, record_date) VALUES (?, ?, ?)")
+      .bind(u.mobile, u.sms_highest_daily_count, u.sms_highest_daily_date)
+      .run();
+  }
+  await env.DB.prepare("UPDATE users SET sms_highest_daily_count = 0, sms_highest_daily_date = NULL").run();
+  await setSettings(env.DB, { sms_highest_daily_reset_month: new Date().toISOString().slice(0, 7) });
+  await logActivity(env.DB, { actorUser: admin, category: "admin", actionText: "সর্বোচ্চ দৈনিক SMS রেকর্ড ম্যানুয়ালি রিসেট করেছেন" });
+  return ok({ reset: true });
+}
+
+// Manually bump either daily SMS limit for one or more selected users,
+// without touching the site-wide default - null clears back to "use site
+// default".
+export async function handleSmsLimitOverride(request, env) {
+  const { user: admin, resp } = await requirePerm(request, env, "manage_users");
+  if (resp) return resp;
+  const body = await readJson(request);
+  const ids = Array.isArray(body.ids) ? body.ids.filter((n) => Number.isInteger(n)) : [];
+  if (!ids.length) return err("কোনো ইউজার নির্বাচন করা হয়নি");
+  const placeholders = ids.map(() => "?").join(",");
+  const patches = [];
+  if (body.userInitiatedLimit !== undefined) {
+    const v = body.userInitiatedLimit === null ? null : Math.max(0, parseInt(body.userInitiatedLimit, 10) || 0);
+    patches.push(["sms_user_initiated_limit_override", v]);
+  }
+  if (body.systemLimit !== undefined) {
+    const v = body.systemLimit === null ? null : Math.max(0, parseInt(body.systemLimit, 10) || 0);
+    patches.push(["sms_system_limit_override", v]);
+  }
+  if (!patches.length) return err("কোনো পরিবর্তন পাওয়া যায়নি");
+  for (const [col, val] of patches) {
+    await env.DB.prepare(`UPDATE users SET ${col} = ? WHERE id IN (${placeholders})`).bind(val, ...ids).run();
+  }
+  await logActivity(env.DB, { actorUser: admin, category: "admin", actionText: `${ids.length} জন ইউজারের SMS লিমিট ওভাররাইড আপডেট করেছেন` });
+  return ok({ updated: true });
 }
