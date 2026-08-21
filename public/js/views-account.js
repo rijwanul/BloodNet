@@ -303,7 +303,7 @@ ViewsAccount.profile = async function (view) {
   });
   if (tabDefs.length > 1) view.appendChild(tabs);
 
-  const body = h("div");
+  const body = h("div", { class: "profile-tab-body" });
   view.appendChild(body);
 
   if (profile.isDonor) {
@@ -621,36 +621,76 @@ async function renderProfileCallsTab(body, isSelf) {
   summaryCard.appendChild(h("div", {}, [h("b", {}, "সর্বমোট কল রিসিভ করেননি: "), `${toBnDigits(data.totalNotPickedUp)} বার`]));
   body.appendChild(summaryCard);
 
-  const card = h("div", { class: "card stack" });
-  if (!data.calls.length) card.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
-  data.calls.forEach((c) => card.appendChild(renderCallHistoryRow(c, body)));
+  const card = h("div", { class: "card" });
+  if (!data.calls.length) {
+    card.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
+  } else {
+    // Every row here is always "someone called the profile holder" (this
+    // endpoint is received-only, see receivedCallsSummaryFor) - so unlike
+    // the site-wide /calls page, there's no need to spell that out or
+    // repeat the profile holder's own name in the status column, hence
+    // the plain দুই-কলাম caller/status table instead of a full sentence.
+    const table = h("table", { class: "activity-log-table profile-calls-table" });
+    table.appendChild(h("thead", {}, h("tr", {}, [h("th", {}, "কল করেছিলো"), h("th", {}, "ষ্ট্যাটাস")])));
+    const tbody = h("tbody");
+    data.calls.forEach((c) => {
+      tbody.appendChild(h("tr", {}, [
+        h("td", {}, [personLink(c.requesterLabel, c.requesterSlug), h("div", { class: "small muted" }, bnDateTimeLong(c.createdAt))]),
+        h("td", {}, c.statusPhrase),
+      ]));
+    });
+    table.appendChild(tbody);
+    card.appendChild(table);
+  }
   body.appendChild(card);
 }
 
 // Site-wide /calls page - full history, both directions, newest first,
 // with date+time and an "আপডেট করুন" action on entries never updated.
+// Unlike the profile tab (always a third-party view of someone else's
+// calls), this page is the signed-in person's OWN call history, so every
+// row is rewritten from their perspective instead of reusing the
+// third-party requester/donor sentence - see renderOwnCallHistoryRow.
 async function renderFullCallHistory(body) {
   const { calls } = await API.get("/api/calls/history");
   const card = h("div", { class: "card stack" });
   if (!calls.length) card.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
-  calls.forEach((c) => card.appendChild(renderCallHistoryRow(c, body, true)));
+  calls.forEach((c) => card.appendChild(renderOwnCallHistoryRow(c, body)));
   body.appendChild(card);
 }
 
-function renderCallHistoryRow(c, body, allowUpdate) {
+// Rewrites a call row from the signed-in person's own point of view:
+//  - They were the REQUESTER (they placed the call): own name/number
+//    collapses to "আপনি", verb becomes করেছিলেন (matches আপনি
+//    grammatically), and the other party's name is dropped from the
+//    status clause since it was just named right before it.
+//    "আপনি কল করেছিলেন X (মাস্কড) কে। ষ্ট্যাটাস: <phrase>"
+//  - They were the DONOR (they received the call): restructured to lead
+//    with "আপনাকে কল করেছিলো" + the caller's name/number, no "কে", and
+//    the status clause becomes "ষ্ট্যাটাস জানিয়েছে:" since it's reporting
+//    what was said about the signed-in person's own status, not someone
+//    else's.
+//    "আপনাকে কল করেছিলো X (মাস্কড)। ষ্ট্যাটাস জানিয়েছে: <phrase>"
+function renderOwnCallHistoryRow(c, body) {
   const row = h("div", { class: "list-item list-item--stacked" });
-  // Both parties individually hyperlinked, per spec: "requester (মাস্কড)
-  // কল করেছিলো donor (মাস্কড) কে। ষ্ট্যাটাস: ..."
-  const line = h("div", {}, [
-    personLink(c.requesterLabel, c.requesterSlug),
-    " কল করেছিলো ",
-    personLink(c.donorLabel, c.donorSlug),
-    " কে। ",
-    c.statusText,
-  ]);
+  const isRequester = APP.user && c.requesterId === APP.user.id;
+  let line;
+  if (isRequester) {
+    line = h("div", {}, [
+      "আপনি কল করেছিলেন ",
+      personLink(c.donorLabel, c.donorSlug),
+      " কে। ষ্ট্যাটাস: " + c.statusPhrase,
+    ]);
+  } else {
+    line = h("div", {}, [
+      "আপনাকে কল করেছিলো ",
+      personLink(c.requesterLabel, c.requesterSlug),
+      "। ষ্ট্যাটাস জানিয়েছে: " + c.statusPhrase,
+    ]);
+  }
   row.appendChild(line);
   row.appendChild(h("div", { class: "small muted" }, bnDateTime(c.createdAt)));
-  if (allowUpdate && c.status === "pending") {
+  if (c.status === "pending") {
     const updateBtn = h("button", { class: "btn btn-outline btn-sm", style: "margin-top:6px" }, "আপডেট করুন");
     updateBtn.onclick = () => renderInlineStatusUpdate(row, c, body);
     row.appendChild(updateBtn);

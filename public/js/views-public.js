@@ -540,7 +540,7 @@ ViewsPublic.publicProfile = async function (view, slug) {
     // the active section's content shown below it.
     const tabCard = h("div", { class: "card" });
     const tabStrip = h("div", { class: "profile-tabs" });
-    const bodyWrap = h("div", { style: "margin-top:14px" });
+    const bodyWrap = h("div", { class: "profile-tab-body", style: "margin-top:14px" });
     sections.forEach((s, i) => {
       const btn = h("button", { type: "button", class: "profile-tabs__btn" + (i === 0 ? " is-active" : "") }, s.label);
       btn.onclick = () => {

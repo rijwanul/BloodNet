@@ -168,6 +168,23 @@ function bnDateTime(iso) {
   return toBnDigits(`${dd}/${mm}/${yyyy}, ${String(hours).padStart(2, "0")}:${minutes} `) + ampm;
 }
 
+const BN_MONTHS = ["জানুয়ারি", "ফেব্রুয়ারি", "মার্চ", "এপ্রিল", "মে", "জুন", "জুলাই", "আগষ্ট", "সেপ্টেম্বর", "অক্টোবর", "নভেম্বর", "ডিসেম্বর"];
+// Same as bnDateTime but spells the month out ("২১ আগষ্ট ২০২৬, ০৭:৪৯ AM")
+// instead of a numeric DD/MM/YYYY - used where the extra length reads
+// better, e.g. a single-column timestamp under a name in a table cell.
+function bnDateTimeLong(iso) {
+  if (!iso) return "";
+  const d = new Date(iso.length === 10 ? iso + "T00:00:00" : iso.replace(" ", "T") + "Z");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const month = BN_MONTHS[d.getMonth()];
+  const yyyy = d.getFullYear();
+  let hours = d.getHours();
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  const ampm = hours >= 12 ? "PM" : "AM";
+  hours = hours % 12 || 12;
+  return toBnDigits(`${dd} `) + month + toBnDigits(` ${yyyy}, ${String(hours).padStart(2, "0")}:${minutes} `) + ampm;
+}
+
 // Bengali duration formatter for countdowns, e.g.:
 //   "১৭ ঘন্টা ২৯ মিনিট ১৩ সেকেন্ড"          (under a day)
 //   "২ মাস ১২ দিন ২৩ ঘন্টা"                  (a month or more - no minutes/seconds)

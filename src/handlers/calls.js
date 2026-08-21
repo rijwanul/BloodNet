@@ -74,12 +74,18 @@ function shapeCallRow(r, settings) {
     donorLabel,
     donorSlug: r.donor_slug || null,
     status: r.status,
-    // Full sentence per spec: "requester (masked) কল করেছিলো donor (masked)
-    // কে। ষ্ট্যাটাস: donor-username <status phrase>" - donorNameOnly (not
-    // the full donorLabel-with-number) is used in the status clause since
-    // repeating the masked number there is redundant once already shown
-    // once in donorLabel just before it.
+    // Full third-party sentence (used as-is on the profile tab, which
+    // always shows OTHER people's view of a call): "requester (masked)
+    // কল করেছিলো donor (masked) কে। ষ্ট্যাটাস: donor-username <phrase>" -
+    // donorNameOnly (not the full donorLabel-with-number) is used in the
+    // status clause since repeating the masked number there is redundant
+    // once already shown once in donorLabel just before it.
     statusText: `ষ্ট্যাটাস: ${donorNameOnly} ${statusPhraseFor(r.status, r.cannot_reason)}`,
+    // Just the phrase with no name/prefix - used by the site-wide /calls
+    // page's own-perspective phrasing ("আপনি ... ষ্ট্যাটাস: <phrase>" /
+    // "আপনাকে ... ষ্ট্যাটাস জানিয়েছে: <phrase>"), which builds its own
+    // sentence around this rather than reusing the third-party statusText.
+    statusPhrase: statusPhraseFor(r.status, r.cannot_reason),
     createdAt: r.created_at,
   };
 }

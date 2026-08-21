@@ -139,6 +139,9 @@ textarea { resize: vertical; min-height: 80px; }
 .activity-log-table th, .activity-log-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .activity-log-table th { font-weight: 700; color: var(--ink-soft); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; }
 .activity-log-table tr:last-child td { border-bottom: none; }
+/* Profile calls tab: borderless variant per spec ("তালিকা...বর্ডার ছাড়া") -
+   overrides the row divider from .activity-log-table above. */
+.profile-calls-table th, .profile-calls-table td { border-bottom: none; padding: 8px 10px 8px 0; }
 .choice-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .choice-grid button { padding: 12px 4px; border-radius: var(--radius-sm); border: 1.5px solid var(--line); background: var(--surface); font-weight: 700; cursor: pointer; }
 .choice-grid button.selected, .choice-grid button:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-tint); }
@@ -169,6 +172,14 @@ textarea { resize: vertical; min-height: 80px; }
 .tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--line); margin-bottom: 16px; -webkit-overflow-scrolling: touch; }
 .tabs button { flex-shrink: 0; padding: 10px 14px; background: none; border: none; border-bottom: 2.5px solid transparent; font-weight: 600; color: var(--ink-soft); cursor: pointer; white-space: nowrap; }
 .tabs button.active { color: var(--primary); border-color: var(--primary); }
+/* Tab content area (both the owner's own profile tabs and the public
+   profile's tab view) always claims the full width of its parent card/
+   column instead of shrinking to fit whichever tab's content happens to
+   be shortest - without this, switching from a short tab (e.g. তথ্য) to
+   a long one (e.g. a wide কল হিষ্ট্রি table) visibly resized the whole
+   surrounding area, most noticeable on desktop where the page has real
+   width to move around in. */
+.profile-tab-body { width: 100%; box-sizing: border-box; }
 
 /* ---------- lists ---------- */
 .list-item { display: flex; justify-content: space-between; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }
