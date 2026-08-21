@@ -191,7 +191,10 @@ function renderBloodGroupStep(view) {
   let selectedGroup = null;
 
   const groupCard = h("div", { class: "card stack" });
-  groupCard.appendChild(h("h2", {}, "কোন গ্রুপের রক্ত প্রয়োজন?"));
+  groupCard.appendChild(h("div", { style: "display:flex;flex-direction:column;gap:2px" }, [
+  h("p", { class: "muted small", style: "margin:0" }, "চট্টগ্রাম জেলায়..."),
+  h("h2", { style: "margin:0" }, "কোন গ্রুপের রক্ত প্রয়োজন?"),
+  ]));
   const countLine = h("p", { class: "muted" });
   const groupErr = h("div", { class: "field-error" });
   const continueBtn = h("button", { class: "btn btn-primary", style: "display:none" }, "এগিয়ে যান");

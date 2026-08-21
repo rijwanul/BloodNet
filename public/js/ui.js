@@ -71,6 +71,29 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove("show"), 3200);
 }
 
+// Copies text to the clipboard and only shows successMsg if the copy
+// genuinely succeeded. navigator.clipboard requires a secure context
+// (HTTPS, or localhost specifically) - over plain HTTP on a bare local IP
+// (e.g. testing from another device on the LAN during development) the
+// API is simply absent, so `navigator.clipboard?.writeText(...)` used to
+// silently no-op while the success toast still fired regardless, telling
+// the person something copied when nothing did. This checks for actual
+// availability first and shows failMsg instead when it's not there.
+async function copyToClipboard(text, successMsg, failMsg) {
+  if (!navigator.clipboard || !window.isSecureContext) {
+    toast(failMsg || "কপি করা যায়নি এই ব্রাউজার/সংযোগে (HTTPS প্রয়োজন)");
+    return false;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(successMsg);
+    return true;
+  } catch {
+    toast(failMsg || "কপি করা যায়নি");
+    return false;
+  }
+}
+
 function pulseDivider(accent) {
   return h("svg", { class: "pulse-divider" + (accent ? " accent" : ""), viewBox: "0 0 300 28", preserveAspectRatio: "none", html:
     '<path d="M0 14 H100 L112 4 L124 24 L136 14 H300" />' });
@@ -276,7 +299,7 @@ function infoModal(message, { title, copyValue } = {}) {
   if (copyValue) {
     const box = h("div", { class: "row" }, [
       h("input", { type: "text", readonly: "", value: copyValue, style: "font-family:monospace" }),
-      h("button", { class: "btn btn-sm btn-outline", onclick: () => { navigator.clipboard?.writeText(copyValue); toast("কপি করা হয়েছে"); } }, "কপি"),
+      h("button", { class: "btn btn-sm btn-outline", onclick: () => copyToClipboard(copyValue, "কপি করা হয়েছে") }, "কপি"),
     ]);
     body.appendChild(box);
   }

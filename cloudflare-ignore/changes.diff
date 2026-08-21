@@ -1,0 +1,203 @@
+diff --git a/public/css/app.css b/public/css/app.css
+index cb897a9..8cb6a9f 100644
+--- a/public/css/app.css
++++ b/public/css/app.css
+@@ -139,6 +139,9 @@ textarea { resize: vertical; min-height: 80px; }
+ .activity-log-table th, .activity-log-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+ .activity-log-table th { font-weight: 700; color: var(--ink-soft); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; }
+ .activity-log-table tr:last-child td { border-bottom: none; }
++/* Profile calls tab: borderless variant per spec ("তালিকা...বর্ডার ছাড়া") -
++   overrides the row divider from .activity-log-table above. */
++.profile-calls-table th, .profile-calls-table td { border-bottom: none; padding: 8px 10px 8px 0; }
+ .choice-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+ .choice-grid button { padding: 12px 4px; border-radius: var(--radius-sm); border: 1.5px solid var(--line); background: var(--surface); font-weight: 700; cursor: pointer; }
+ .choice-grid button.selected, .choice-grid button:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-tint); }
+@@ -169,6 +172,14 @@ textarea { resize: vertical; min-height: 80px; }
+ .tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--line); margin-bottom: 16px; -webkit-overflow-scrolling: touch; }
+ .tabs button { flex-shrink: 0; padding: 10px 14px; background: none; border: none; border-bottom: 2.5px solid transparent; font-weight: 600; color: var(--ink-soft); cursor: pointer; white-space: nowrap; }
+ .tabs button.active { color: var(--primary); border-color: var(--primary); }
++/* Tab content area (both the owner's own profile tabs and the public
++   profile's tab view) always claims the full width of its parent card/
++   column instead of shrinking to fit whichever tab's content happens to
++   be shortest - without this, switching from a short tab (e.g. তথ্য) to
++   a long one (e.g. a wide কল হিষ্ট্রি table) visibly resized the whole
++   surrounding area, most noticeable on desktop where the page has real
++   width to move around in. */
++.profile-tab-body { width: 100%; box-sizing: border-box; }
+ 
+ /* ---------- lists ---------- */
+ .list-item { display: flex; justify-content: space-between; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+diff --git a/public/js/ui.js b/public/js/ui.js
+index 4f39806..023020d 100644
+--- a/public/js/ui.js
++++ b/public/js/ui.js
+@@ -168,6 +168,23 @@ function bnDateTime(iso) {
+   return toBnDigits(`${dd}/${mm}/${yyyy}, ${String(hours).padStart(2, "0")}:${minutes} `) + ampm;
+ }
+ 
++const BN_MONTHS = ["জানুয়ারি", "ফেব্রুয়ারি", "মার্চ", "এপ্রিল", "মে", "জুন", "জুলাই", "আগষ্ট", "সেপ্টেম্বর", "অক্টোবর", "নভেম্বর", "ডিসেম্বর"];
++// Same as bnDateTime but spells the month out ("২১ আগষ্ট ২০২৬, ০৭:৪৯ AM")
++// instead of a numeric DD/MM/YYYY - used where the extra length reads
++// better, e.g. a single-column timestamp under a name in a table cell.
++function bnDateTimeLong(iso) {
++  if (!iso) return "";
++  const d = new Date(iso.length === 10 ? iso + "T00:00:00" : iso.replace(" ", "T") + "Z");
++  const dd = String(d.getDate()).padStart(2, "0");
++  const month = BN_MONTHS[d.getMonth()];
++  const yyyy = d.getFullYear();
++  let hours = d.getHours();
++  const minutes = String(d.getMinutes()).padStart(2, "0");
++  const ampm = hours >= 12 ? "PM" : "AM";
++  hours = hours % 12 || 12;
++  return toBnDigits(`${dd} `) + month + toBnDigits(` ${yyyy}, ${String(hours).padStart(2, "0")}:${minutes} `) + ampm;
++}
++
+ // Bengali duration formatter for countdowns, e.g.:
+ //   "১৭ ঘন্টা ২৯ মিনিট ১৩ সেকেন্ড"          (under a day)
+ //   "২ মাস ১২ দিন ২৩ ঘন্টা"                  (a month or more - no minutes/seconds)
+diff --git a/public/js/views-account.js b/public/js/views-account.js
+index 3c67e90..c554368 100644
+--- a/public/js/views-account.js
++++ b/public/js/views-account.js
+@@ -303,7 +303,7 @@ ViewsAccount.profile = async function (view) {
+   });
+   if (tabDefs.length > 1) view.appendChild(tabs);
+ 
+-  const body = h("div");
++  const body = h("div", { class: "profile-tab-body" });
+   view.appendChild(body);
+ 
+   if (profile.isDonor) {
+@@ -621,36 +621,76 @@ async function renderProfileCallsTab(body, isSelf) {
+   summaryCard.appendChild(h("div", {}, [h("b", {}, "সর্বমোট কল রিসিভ করেননি: "), `${toBnDigits(data.totalNotPickedUp)} বার`]));
+   body.appendChild(summaryCard);
+ 
+-  const card = h("div", { class: "card stack" });
+-  if (!data.calls.length) card.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
+-  data.calls.forEach((c) => card.appendChild(renderCallHistoryRow(c, body)));
++  const card = h("div", { class: "card" });
++  if (!data.calls.length) {
++    card.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
++  } else {
++    // Every row here is always "someone called the profile holder" (this
++    // endpoint is received-only, see receivedCallsSummaryFor) - so unlike
++    // the site-wide /calls page, there's no need to spell that out or
++    // repeat the profile holder's own name in the status column, hence
++    // the plain দুই-কলাম caller/status table instead of a full sentence.
++    const table = h("table", { class: "activity-log-table profile-calls-table" });
++    table.appendChild(h("thead", {}, h("tr", {}, [h("th", {}, "কল করেছিলো"), h("th", {}, "ষ্ট্যাটাস")])));
++    const tbody = h("tbody");
++    data.calls.forEach((c) => {
++      tbody.appendChild(h("tr", {}, [
++        h("td", {}, [personLink(c.requesterLabel, c.requesterSlug), h("div", { class: "small muted" }, bnDateTimeLong(c.createdAt))]),
++        h("td", {}, c.statusPhrase),
++      ]));
++    });
++    table.appendChild(tbody);
++    card.appendChild(table);
++  }
+   body.appendChild(card);
+ }
+ 
+ // Site-wide /calls page - full history, both directions, newest first,
+ // with date+time and an "আপডেট করুন" action on entries never updated.
++// Unlike the profile tab (always a third-party view of someone else's
++// calls), this page is the signed-in person's OWN call history, so every
++// row is rewritten from their perspective instead of reusing the
++// third-party requester/donor sentence - see renderOwnCallHistoryRow.
+ async function renderFullCallHistory(body) {
+   const { calls } = await API.get("/api/calls/history");
+   const card = h("div", { class: "card stack" });
+   if (!calls.length) card.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
+-  calls.forEach((c) => card.appendChild(renderCallHistoryRow(c, body, true)));
++  calls.forEach((c) => card.appendChild(renderOwnCallHistoryRow(c, body)));
+   body.appendChild(card);
+ }
+ 
+-function renderCallHistoryRow(c, body, allowUpdate) {
++// Rewrites a call row from the signed-in person's own point of view:
++//  - They were the REQUESTER (they placed the call): own name/number
++//    collapses to "আপনি", verb becomes করেছিলেন (matches আপনি
++//    grammatically), and the other party's name is dropped from the
++//    status clause since it was just named right before it.
++//    "আপনি কল করেছিলেন X (মাস্কড) কে। ষ্ট্যাটাস: <phrase>"
++//  - They were the DONOR (they received the call): restructured to lead
++//    with "আপনাকে কল করেছিলো" + the caller's name/number, no "কে", and
++//    the status clause becomes "ষ্ট্যাটাস জানিয়েছে:" since it's reporting
++//    what was said about the signed-in person's own status, not someone
++//    else's.
++//    "আপনাকে কল করেছিলো X (মাস্কড)। ষ্ট্যাটাস জানিয়েছে: <phrase>"
++function renderOwnCallHistoryRow(c, body) {
+   const row = h("div", { class: "list-item list-item--stacked" });
+-  // Both parties individually hyperlinked, per spec: "requester (মাস্কড)
+-  // কল করেছিলো donor (মাস্কড) কে। ষ্ট্যাটাস: ..."
+-  const line = h("div", {}, [
+-    personLink(c.requesterLabel, c.requesterSlug),
+-    " কল করেছিলো ",
+-    personLink(c.donorLabel, c.donorSlug),
+-    " কে। ",
+-    c.statusText,
+-  ]);
++  const isRequester = APP.user && c.requesterId === APP.user.id;
++  let line;
++  if (isRequester) {
++    line = h("div", {}, [
++      "আপনি কল করেছিলেন ",
++      personLink(c.donorLabel, c.donorSlug),
++      " কে। ষ্ট্যাটাস: " + c.statusPhrase,
++    ]);
++  } else {
++    line = h("div", {}, [
++      "আপনাকে কল করেছিলো ",
++      personLink(c.requesterLabel, c.requesterSlug),
++      "। ষ্ট্যাটাস জানিয়েছে: " + c.statusPhrase,
++    ]);
++  }
+   row.appendChild(line);
+   row.appendChild(h("div", { class: "small muted" }, bnDateTime(c.createdAt)));
+-  if (allowUpdate && c.status === "pending") {
++  if (c.status === "pending") {
+     const updateBtn = h("button", { class: "btn btn-outline btn-sm", style: "margin-top:6px" }, "আপডেট করুন");
+     updateBtn.onclick = () => renderInlineStatusUpdate(row, c, body);
+     row.appendChild(updateBtn);
+diff --git a/public/js/views-public.js b/public/js/views-public.js
+index 0d69b34..d0ce6f2 100644
+--- a/public/js/views-public.js
++++ b/public/js/views-public.js
+@@ -540,7 +540,7 @@ ViewsPublic.publicProfile = async function (view, slug) {
+     // the active section's content shown below it.
+     const tabCard = h("div", { class: "card" });
+     const tabStrip = h("div", { class: "profile-tabs" });
+-    const bodyWrap = h("div", { style: "margin-top:14px" });
++    const bodyWrap = h("div", { class: "profile-tab-body", style: "margin-top:14px" });
+     sections.forEach((s, i) => {
+       const btn = h("button", { type: "button", class: "profile-tabs__btn" + (i === 0 ? " is-active" : "") }, s.label);
+       btn.onclick = () => {
+diff --git a/src/handlers/calls.js b/src/handlers/calls.js
+index b4bdf9a..d7477e4 100644
+--- a/src/handlers/calls.js
++++ b/src/handlers/calls.js
+@@ -74,12 +74,18 @@ function shapeCallRow(r, settings) {
+     donorLabel,
+     donorSlug: r.donor_slug || null,
+     status: r.status,
+-    // Full sentence per spec: "requester (masked) কল করেছিলো donor (masked)
+-    // কে। ষ্ট্যাটাস: donor-username <status phrase>" - donorNameOnly (not
+-    // the full donorLabel-with-number) is used in the status clause since
+-    // repeating the masked number there is redundant once already shown
+-    // once in donorLabel just before it.
++    // Full third-party sentence (used as-is on the profile tab, which
++    // always shows OTHER people's view of a call): "requester (masked)
++    // কল করেছিলো donor (masked) কে। ষ্ট্যাটাস: donor-username <phrase>" -
++    // donorNameOnly (not the full donorLabel-with-number) is used in the
++    // status clause since repeating the masked number there is redundant
++    // once already shown once in donorLabel just before it.
+     statusText: `ষ্ট্যাটাস: ${donorNameOnly} ${statusPhraseFor(r.status, r.cannot_reason)}`,
++    // Just the phrase with no name/prefix - used by the site-wide /calls
++    // page's own-perspective phrasing ("আপনি ... ষ্ট্যাটাস: <phrase>" /
++    // "আপনাকে ... ষ্ট্যাটাস জানিয়েছে: <phrase>"), which builds its own
++    // sentence around this rather than reusing the third-party statusText.
++    statusPhrase: statusPhraseFor(r.status, r.cannot_reason),
+     createdAt: r.created_at,
+   };
+ }

@@ -2,3 +2,5 @@
 cloudflare-ignore/
 .git/
 .gitignore
+ignore/
+arc/

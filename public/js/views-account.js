@@ -6,6 +6,11 @@ ViewsAccount.quick = async function (view) {
   const { eligibilityStatus, snoozeUntil, snoozeReason, note, lastEligibilityChangeNote, pendingDonationPrompt } = status;
   view.innerHTML = "";
   view.appendChild(h("h2", {}, "আমার অবস্থা"));
+  view.appendChild(h("p", { class: "muted small" }, [
+    "রক্তদানের প্রস্তুতি সুইচ ও মোবাইল নাম্বার পরিবর্তন ব্যতিত প্রায় সকল বিষয় ",
+    h("a", { href: "/profile/edit", "data-link": "" }, "প্রোফাইল"),
+    " থেকেও আপডেট করা সম্ভব।",
+  ]));
 
   // If the last call outcome was "রক্ত দিতে পারবে", the donation-entry
   // section moves to position 1 with an extra "না, সম্প্রতি রক্তদান করিনি"
@@ -48,7 +53,7 @@ async function renderEligibilityToggleSection(view, status) {
   cb.checked = eligibilityStatus === "on";
   switchWrap.appendChild(cb);
   switchWrap.appendChild(h("span", { class: "track" }));
-  toggleRow.appendChild(h("div", {}, [h("b", {}, "রক্তদানের জন্য প্রস্তুত"), badge]));
+  toggleRow.appendChild(h("div", {}, [h("b", {}, "রক্তদানের জন্য প্রস্তুত"), "\u00A0\u00A0", badge]));
   toggleRow.appendChild(switchWrap);
   card.appendChild(toggleRow);
 
@@ -59,6 +64,22 @@ async function renderEligibilityToggleSection(view, status) {
   if (eligibilityStatus === "snoozed" && snoozeUntil) {
     snoozeArea.appendChild(renderCountdown(snoozeUntil, snoozeReason));
   }
+
+  // Appended to the card AFTER snoozeArea, so it naturally sits at the
+  // true bottom of the section regardless of whether snoozeArea ends up
+  // holding a countdown/snooze-options block or nothing at all.
+  const shareBase = (APP.settings && APP.settings.profileShareBaseUrl) || location.origin;
+  const shareUrl = APP.user && APP.user.username ? `${shareBase.replace(/\/$/, "")}/${APP.user.username}` : null;
+  const profileLinkSpan = h("a", { href: "#", onclick: (e) => {
+    e.preventDefault();
+    if (!shareUrl) return;
+    copyToClipboard(shareUrl, "প্রোফাইল লিংক কপি হয়েছে");
+  } }, "প্রোফাইল লিংক");
+  card.appendChild(h("p", { class: "muted small", style: "margin-top:12px" }, [
+    "সুইচটি বন্ধ রাখলে, রক্ত দরকার অপশনে রোগীর কাছে আপনার তথ্য প্রদান করা হবে না। তবে আপনি ম্যানুয়ালি আপনার ",
+    profileLinkSpan,
+    " শেয়ার করতে পারবেন।",
+  ]));
 
   cb.onchange = async () => {
     if (cb.checked) {
@@ -74,12 +95,32 @@ async function renderEligibilityToggleSection(view, status) {
 }
 
 async function renderNoteSection(view, status) {
-  const noteCard = h("div", { class: "card stack" });
+  // Styled to match the dashed warn-colored callout the note gets on the
+  // profile page (.donor-card__note) instead of a plain neutral .card -
+  // uses that class alone (not combined with .card) since .card's own
+  // background/border/padding would otherwise fight with it for the same
+  // properties, depending on CSS source order.
+  // Inline style, not a CSS-file change: .donor-card__note has no
+  // box-shadow of its own (it was designed as an inline callout inside a
+  // profile card, not a standalone floating card like the other /quick
+  // sections use), so this adds the same shadow those sibling .card
+  // elements get, scoped to just this one instance.
+  const noteCard = h("div", { class: "stack donor-card__note", style: "box-shadow: var(--shadow);" });
   noteCard.appendChild(h("h3", {}, "নোট আপডেট"));
   const noteField = h("textarea", { placeholder: "যেমনঃ ২ ঘন্টা আগে জানাবেন" });
   noteField.value = status.note || "";
   noteCard.appendChild(h("div", { class: "field" }, [h("label", {}, "নতুন নোট"), noteField]));
-  const noteBtn = h("button", { class: "btn btn-outline" }, "আপডেট");
+  // Inline border override: .btn-outline's border-color (var(--line), a
+  // light neutral gray meant to stand out against a plain white .card)
+  // nearly disappears against .donor-card__note's warm tinted background -
+  // var(--warn) matches the callout's own border color instead.
+  const noteBtn = h("button", { class: "btn btn-outline", style: "border-color: var(--warn);" }, "আপডেট");
+  noteField.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    if (!noteBtn.disabled) noteBtn.click();
+  }
+});
   noteCard.appendChild(noteBtn);
   noteBtn.onclick = async () => {
     try { await API.post("/api/donor/note", { note: noteField.value }); toast("নোট আপডেট হয়েছে"); }
@@ -343,7 +384,7 @@ function renderInfoTab(body, profile) {
     const urlRow = h("div", { class: "row", style: "min-width:0" });
     urlRow.appendChild(h("b", { style: "flex-shrink:0" }, "প্রোফাইল URL: "));
     urlRow.appendChild(h("a", { href: shareUrl, style: "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, shareUrl));
-    const copyBtn = h("button", { type: "button", class: "btn-icon", title: "কপি করুন", onclick: () => { navigator.clipboard?.writeText(shareUrl); toast("লিংক কপি হয়েছে"); } }, icon("copy", "small"));
+    const copyBtn = h("button", { type: "button", class: "btn-icon", title: "কপি করুন", onclick: () => copyToClipboard(shareUrl, "লিংক কপি হয়েছে") }, icon("copy", "small"));
     const editBtn = h("button", { type: "button", class: "btn-icon", title: "ইউজারনেইম পরিবর্তন করুন", onclick: () => toggleUsernameEditor(card, profile) }, icon("pencil", "small"));
     urlRow.appendChild(copyBtn);
     urlRow.appendChild(editBtn);
@@ -625,6 +666,7 @@ async function renderProfileCallsTab(body, isSelf) {
   if (!data.calls.length) {
     card.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
   } else {
+    card.appendChild(h("p", { class: "muted small" }, "সর্বশেষ ৫টি কল দেখানো হচ্ছে যা এই প্রোফাইল হোল্ডারকে করা হয়েছে।"));
     // Every row here is always "someone called the profile holder" (this
     // endpoint is received-only, see receivedCallsSummaryFor) - so unlike
     // the site-wide /calls page, there's no need to spell that out or
@@ -689,7 +731,7 @@ function renderOwnCallHistoryRow(c, body) {
     ]);
   }
   row.appendChild(line);
-  row.appendChild(h("div", { class: "small muted" }, bnDateTime(c.createdAt)));
+  row.appendChild(h("div", { class: "small muted" }, bnDateTimeLong(c.createdAt)));
   if (c.status === "pending") {
     const updateBtn = h("button", { class: "btn btn-outline btn-sm", style: "margin-top:6px" }, "আপডেট করুন");
     updateBtn.onclick = () => renderInlineStatusUpdate(row, c, body);

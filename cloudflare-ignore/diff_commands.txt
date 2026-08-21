@@ -1,0 +1,12 @@
+git diff > changes.diff
+
+git diff HEAD~1 HEAD > changes.diff
+
+git apply changes.patch
+This edits your working files directly to match the diff
+
+git apply --check changes.patch
+This validates the patch without touching any files — no output means it would apply cleanly.
+
+git apply --stat changes.patch
+Shows a summary of which files and how many lines would change.
