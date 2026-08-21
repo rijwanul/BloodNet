@@ -309,7 +309,7 @@ ViewsAccount.profile = async function (view) {
   if (profile.isDonor) {
     view.appendChild(h("div", { class: "btn-row", style: "margin-top:16px" }, [
       h("a", { href: "/profile/edit", "data-link": "", class: "btn btn-primary" }, "এডিট প্রোফাইল"),
-      h("a", { href: "/profile/privacy", "data-link": "", class: "btn btn-outline" }, "গোপনীয়তা সেটিংস"),
+      h("a", { href: "/profile/privacy", "data-link": "", class: "btn btn-outline" }, "প্রাইভেসি সেটিংস"),
     ]));
   } else {
     view.appendChild(h("div", { class: "btn-row", style: "margin-top:16px" }, [
@@ -943,10 +943,6 @@ ViewsAccount.settings = async function (view) {
     view.appendChild(offCard);
   }
 
-  const logoutCard = h("div", { class: "card" });
-  logoutCard.appendChild(h("button", { class: "btn btn-outline", onclick: doLogout }, [icon("log-out", "small"), " লগআউট"]));
-  view.appendChild(logoutCard);
-
   if ((APP.settings || {}).selfDeletionEnabled !== false) {
     const delCard = h("div", { class: "card stack" });
     delCard.appendChild(h("h3", {}, "প্রোফাইল ডিলেট"));
@@ -968,4 +964,9 @@ ViewsAccount.settings = async function (view) {
     };
     view.appendChild(delCard);
   }
+
+  const logoutCard = h("div", { class: "card" });
+  logoutCard.appendChild(h("button", { class: "btn btn-outline", onclick: doLogout }, [icon("log-out", "small"), " লগআউট"]));
+  view.appendChild(logoutCard);
+
 };

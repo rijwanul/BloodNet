@@ -65,6 +65,14 @@ wrangler secret put JWT_SECRET</code></pre>
   <p>Log in as the root admin and visit <code>/admin/site-apis</code> to add your ImgBB, DonorBD, and GreenSMS-compatible SMS gateway keys, and <code>/admin/site-settings</code> to set branding (logo, favicon, social preview, theme color, welcome text).</p>
 </div>
 
+<div class="step">
+  <h2>Test on local with remote data safely</h2>
+  <pre><code>wrangler d1 export bnetv2_db --remote --output=snapshot.sql</code></pre>
+  <pre><code>wrangler d1 execute bnetv2_db --local --file=./schema.sql</code></pre>
+  <pre><code>wrangler d1 execute bnetv2_db --local --file=./snapshot.sql</code></pre>
+  <p>Takes snapshot from remote db to local and then injects it into a local D1 instance</p>
+</div>
+
 <hr>
 <h2>Interactive API tester</h2>
 <p>Use these forms to sanity-check your deployment once it is live. Replace <code>YOUR-WORKER-URL</code> below.</p>
