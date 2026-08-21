@@ -35,11 +35,17 @@ export async function handleDismissEligibilityNote(request, env) {
   return ok({ dismissed: true });
 }
 
+const DHAKA_OFFSET_MINUTES = 6 * 60; // GMT+6, no DST
+
 const SNOOZE_PRESETS = {
+  // "আজকের জন্য বন্ধ" means end of today in Dhaka local time, not UTC -
+  // the Worker runtime's Date object is always UTC, so end-of-day has to
+  // be computed by shifting into Dhaka's wall-clock day first.
   today: () => {
-    const d = new Date();
-    d.setHours(23, 59, 59, 0);
-    return d;
+    const now = new Date();
+    const dhakaNow = new Date(now.getTime() + DHAKA_OFFSET_MINUTES * 60 * 1000);
+    dhakaNow.setUTCHours(23, 59, 59, 0); // end of the Dhaka calendar day, expressed in the shifted clock
+    return new Date(dhakaNow.getTime() - DHAKA_OFFSET_MINUTES * 60 * 1000); // shift back to real UTC instant
   },
   "2h": () => new Date(Date.now() + 2 * 3600 * 1000),
   "6h": () => new Date(Date.now() + 6 * 3600 * 1000),

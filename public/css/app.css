@@ -227,9 +227,9 @@ th { color: var(--ink-soft); font-weight: 600; font-size: 0.8rem; text-transform
 /* Puts a field + its "মনে নেই"-style checkbox on one row on wider screens,
    stacked on narrow ones, so the checkbox sits to the right of the field
    instead of on its own line below it. */
-.field-row-with-checkbox { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
-.field-row-with-checkbox .field { margin-bottom: 0; }
-.checkbox-row--inline { padding: 0 0 10px; white-space: nowrap; }
+.field-row-with-checkbox { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.field-row-with-checkbox .field { margin-bottom: 0; flex: 1 1 200px; min-width: 200px; }
+.checkbox-row--inline { padding: 0; white-space: nowrap; margin-top: 1px; }
 
 .link-list a { display: block; padding: 4px 0; }
 

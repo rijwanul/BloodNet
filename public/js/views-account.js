@@ -358,12 +358,44 @@ ViewsAccount.profile = async function (view) {
     ]));
   }
 
+  // Per-visit cache for the donations/calls tabs - lazily populated on
+  // first click, then reused for every subsequent switch back to that tab
+  // during this same profile visit (navigating away and re-entering
+  // /profile always re-runs this function from scratch, so nothing here
+  // survives across visits, only within one). Each entry is either null
+  // (not fetched yet), a pending Promise (fetch in flight, so a rapid
+  // double-click doesn't fire two requests), or the resolved data.
+  const cache = { donations: null, calls: null };
+
+  function loadDonations() {
+    if (!cache.donations) cache.donations = API.get("/api/profile/donations");
+    return cache.donations;
+  }
+  function loadCalls() {
+    if (!cache.calls) cache.calls = API.get("/api/calls/received-summary");
+    return cache.calls;
+  }
+  // Donors very often check কল হিষ্ট্রি right after পূর্বের ডোনেশনসমূহ, so
+  // opening donations quietly warms the calls cache in the background too
+  // - if they do click calls next it's already there instead of triggering
+  // a fresh fetch. Fire-and-forget: any failure here is silently retried
+  // by loadCalls() itself when the tab is actually opened.
+  function prefetchCalls() {
+    if (!cache.calls) cache.calls = API.get("/api/calls/received-summary").catch(() => { cache.calls = null; });
+  }
+  // Invalidates only the donations entry so the next open re-fetches -
+  // used after any donation add/edit/delete. Calls cache is untouched
+  // since those mutations can't affect call history.
+  function invalidateDonations() {
+    cache.donations = null;
+  }
+
   function setTab(key) {
     Object.entries(tabBtns).forEach(([k, b]) => b.classList.toggle("active", k === key));
     body.innerHTML = "";
     if (key === "info") renderInfoTab(body, profile);
-    if (key === "donations") renderDonationsTab(body, profile);
-    if (key === "calls") renderProfileCallsTab(body, true);
+    if (key === "donations") { renderDonationsTab(body, profile, loadDonations, invalidateDonations); prefetchCalls(); }
+    if (key === "calls") renderProfileCallsTab(body, true, loadCalls);
     if (key === "other") renderOtherTab(body, profile);
   }
   Object.keys(tabBtns).forEach((key) => (tabBtns[key].onclick = () => setTab(key)));
@@ -501,14 +533,14 @@ function toggleUsernameEditor(card, profile) {
 // and/or hospital as unknown; if date is unknown, an additional checkbox
 // lets the donor declare there are MORE undated donations, in which case
 // they provide the grand total (replacing, not adding to, the bucket).
-async function renderDonationsTab(body, profile) {
-  const { donations, extraCount } = await API.get("/api/profile/donations");
+async function renderDonationsTab(body, profile, loadDonations, invalidateDonations) {
+  const { donations, extraCount } = await loadDonations();
   const card = h("div", { class: "card stack" });
   // Backend already orders donation_date DESC, id DESC (NULLs/undated last
   // in SQLite's default ordering), so no re-sort needed here - dated
   // entries appear first, undated-but-remembered-hospital entries below
   // them with a dash standing in for the date.
-  donations.forEach((d) => card.appendChild(renderDonationListItem(d, body, profile)));
+  donations.forEach((d) => card.appendChild(renderDonationListItem(d, body, profile, loadDonations, invalidateDonations)));
   if (extraCount > 0) card.appendChild(h("p", { class: "muted small" }, `…এবং আরো ${toBnDigits(extraCount)} বার`));
   if (!donations.length && !extraCount) card.appendChild(h("p", { class: "muted" }, "কোনো তথ্য নেই"));
   body.appendChild(card);
@@ -548,13 +580,18 @@ async function renderDonationsTab(body, profile) {
   dateField.disabled = false;
   const syncDateUnknown = () => {
     dateField.disabled = dateUnknownCb.checked;
+    dateField.style.display = dateUnknownCb.checked ? "none" : "";
     if (dateUnknownCb.checked) dateField.value = "";
     moreUnknownWrap.style.display = dateUnknownCb.checked ? "block" : "none";
     if (!dateUnknownCb.checked) { moreUnknownCb.checked = false; totalUnknownWrap.style.display = "none"; hospRow.style.display = ""; }
   };
   dateUnknownCb.onchange = syncDateUnknown;
   hospField.disabled = false;
-  hospUnknownCb.onchange = () => { hospField.disabled = hospUnknownCb.checked; if (hospUnknownCb.checked) hospField.value = ""; };
+  hospUnknownCb.onchange = () => {
+    hospField.disabled = hospUnknownCb.checked;
+    hospField.style.display = hospUnknownCb.checked ? "none" : "";
+    if (hospUnknownCb.checked) hospField.value = "";
+  };
   // "আরো রয়েছে" checked -> হাসপাতালের নাম row (which has no meaning once the
   // donor is describing a bucket of many undated donations) is hidden entirely.
   moreUnknownCb.onchange = () => {
@@ -581,8 +618,9 @@ async function renderDonationsTab(body, profile) {
       // Live-update the donation counter under the profile picture without
       // requiring a page refresh.
       refreshDonationCounter();
+      invalidateDonations();
       body.innerHTML = "";
-      renderDonationsTab(body, profile);
+      renderDonationsTab(body, profile, loadDonations, invalidateDonations);
     } catch (e) { toast(e.message); }
   };
   body.appendChild(addCard);
@@ -599,21 +637,22 @@ async function refreshDonationCounter() {
 // Single donation row with an edit/delete affordance. Undated-but-
 // hospital-remembered entries show a dash in place of the date (backend
 // already sorts these below dated entries).
-function renderDonationListItem(d, body, profile) {
+function renderDonationListItem(d, body, profile, loadDonations, invalidateDonations) {
   const row = h("div", { class: "list-item" });
   const dateLabel = d.donation_date ? bnDate(d.donation_date) : "—";
   const textSpan = h("span", {}, [dateLabel, d.hospital_name ? h("span", { class: "muted" }, ` · ${d.hospital_name}`) : null]);
   row.appendChild(textSpan);
 
   const actions = h("div", { class: "list-item__actions" });
-  const editBtn = h("button", { type: "button", class: "btn-icon", title: "সম্পাদনা করুন", onclick: () => toggleDonationEditor(row, d, body, profile) }, icon("pencil", "small"));
+  const editBtn = h("button", { type: "button", class: "btn-icon", title: "সম্পাদনা করুন", onclick: () => toggleDonationEditor(row, d, body, profile, loadDonations, invalidateDonations) }, icon("pencil", "small"));
   const deleteBtn = h("button", { type: "button", class: "btn-icon", title: "ডিলিট করুন", onclick: async () => {
     if (!confirm("এই এন্ট্রিটি ডিলিট করতে চান?")) return;
     try {
       await API.del(`/api/profile/donations/${d.id}`);
       toast("ডিলিট করা হয়েছে");
+      invalidateDonations();
       body.innerHTML = "";
-      renderDonationsTab(body, profile);
+      renderDonationsTab(body, profile, loadDonations, invalidateDonations);
     } catch (e) { toast(e.message); }
   } }, icon("trash-2", "small"));
   actions.appendChild(editBtn);
@@ -622,7 +661,7 @@ function renderDonationListItem(d, body, profile) {
   return row;
 }
 
-function toggleDonationEditor(row, d, body, profile) {
+function toggleDonationEditor(row, d, body, profile, loadDonations, invalidateDonations) {
   const existing = row.querySelector(".donation-editor");
   if (existing) { existing.remove(); return; }
   const editor = h("div", { class: "donation-editor stack", style: "margin-top:10px;width:100%" });
@@ -644,8 +683,9 @@ function toggleDonationEditor(row, d, body, profile) {
         hospitalUnknown: !hospField.value,
       });
       toast("পরিবর্তন সংরক্ষণ করা হয়েছে");
+      invalidateDonations();
       body.innerHTML = "";
-      renderDonationsTab(body, profile);
+      renderDonationsTab(body, profile, loadDonations, invalidateDonations);
     } catch (e) { toast(e.message); }
   };
   row.appendChild(editor);
@@ -653,8 +693,8 @@ function toggleDonationEditor(row, d, body, profile) {
 
 // Profile tab's own "calls" section - RECEIVED calls only, last 5, with
 // aggregate counters above the list.
-async function renderProfileCallsTab(body, isSelf) {
-  const data = await API.get("/api/calls/received-summary");
+async function renderProfileCallsTab(body, isSelf, loadCalls) {
+  const data = await loadCalls();
   const summaryCard = h("div", { class: "card stack" });
   summaryCard.appendChild(h("div", {}, [h("b", {}, "সর্বমোট কল করেছেন: "), `${toBnDigits(data.totalCallsMade)} বার`]));
   summaryCard.appendChild(h("div", {}, [h("b", {}, "সর্বমোট কল ষ্ট্যাটাস আপডেট করেন নি: "), `${toBnDigits(data.totalNotUpdated)} বার`]));
@@ -666,7 +706,7 @@ async function renderProfileCallsTab(body, isSelf) {
   if (!data.calls.length) {
     card.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
   } else {
-    card.appendChild(h("p", { class: "muted small" }, "সর্বশেষ ৫টি কল দেখানো হচ্ছে যা এই প্রোফাইল হোল্ডারকে করা হয়েছে।"));
+    card.appendChild(h("p", { class: "muted small" }, "প্রোফাইল হোল্ডারকে করা সর্বশেষ ৫টি কল..."));
     // Every row here is always "someone called the profile holder" (this
     // endpoint is received-only, see receivedCallsSummaryFor) - so unlike
     // the site-wide /calls page, there's no need to spell that out or

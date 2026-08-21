@@ -157,7 +157,11 @@ function toBnDigits(n) {
   return String(n).replace(/[0-9]/g, (d) => BN_DIGITS[+d]);
 }
 
-// Site-wide date format: DD/MM/YYYY (with Bengali digits).
+const BN_MONTHS = ["জানুয়ারি", "ফেব্রুয়ারি", "মার্চ", "এপ্রিল", "মে", "জুন", "জুলাই", "আগষ্ট", "সেপ্টেম্বর", "অক্টোবর", "নভেম্বর", "ডিসেম্বর"];
+
+// Site-wide date format: "D Month YYYY" with the month name spelled out
+// (e.g. "২০ আগষ্ট ২০২৬") - BN_MONTHS is defined below, next to
+// bnDateTimeLong which uses the same table.
 function bnDate(iso) {
   if (!iso) return "";
   // A plain 10-char date ("2026-08-19") has no time component and is
@@ -170,9 +174,9 @@ function bnDate(iso) {
   // (the same class of bug that broke the ২/৬ ঘন্টা snooze countdown).
   const d = new Date(iso.length === 10 ? iso + "T00:00:00" : iso.replace(" ", "T") + "Z");
   const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const month = BN_MONTHS[d.getMonth()];
   const yyyy = d.getFullYear();
-  return toBnDigits(`${dd}/${mm}/${yyyy}`);
+  return toBnDigits(`${dd} `) + month + toBnDigits(` ${yyyy}`);
 }
 
 // Same as bnDate but also shows the time, in the requester's local
@@ -191,7 +195,6 @@ function bnDateTime(iso) {
   return toBnDigits(`${dd}/${mm}/${yyyy}, ${String(hours).padStart(2, "0")}:${minutes} `) + ampm;
 }
 
-const BN_MONTHS = ["জানুয়ারি", "ফেব্রুয়ারি", "মার্চ", "এপ্রিল", "মে", "জুন", "জুলাই", "আগষ্ট", "সেপ্টেম্বর", "অক্টোবর", "নভেম্বর", "ডিসেম্বর"];
 // Same as bnDateTime but spells the month out ("২১ আগষ্ট ২০২৬, ০৭:৪৯ AM")
 // instead of a numeric DD/MM/YYYY - used where the extra length reads
 // better, e.g. a single-column timestamp under a name in a table cell.
