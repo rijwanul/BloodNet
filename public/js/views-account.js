@@ -234,7 +234,7 @@ async function renderLocationChangeSection(view, status) {
 // snooze page), this returns just a small ticking text span suitable for
 // sitting next to a badge. Same UTC "Z" fix applies (see renderCountdown).
 function inlineCountdown(untilIso) {
-  const span = h("span", { class: "small muted", style: "margin-left:6px" });
+  const span = h("span", { class: "small muted" });
   const target = new Date(untilIso.replace(" ", "T") + "Z").getTime();
   const tick = () => {
     const diff = target - Date.now();

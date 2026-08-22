@@ -480,7 +480,8 @@ ViewsPublic.publicProfile = async function (view, slug) {
       // Timer only makes sense (and is only shown) for the temporary
       // "snoozed" state - "on"/"off" have no countdown to display.
       if (profile.eligibilityStatus === "snoozed" && profile.eligibilitySnoozeUntil) {
-        badgeRow.appendChild(inlineCountdown(profile.eligibilitySnoozeUntil));
+        const countdownLine = h("div", { style: "margin-top:2px" }, inlineCountdown(profile.eligibilitySnoozeUntil));
+        badgeRow.appendChild(countdownLine);
       }
       card.appendChild(badgeRow);
     }
