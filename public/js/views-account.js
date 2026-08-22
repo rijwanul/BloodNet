@@ -638,13 +638,14 @@ async function refreshDonationCounter() {
 // hospital-remembered entries show a dash in place of the date (backend
 // already sorts these below dated entries).
 function renderDonationListItem(d, body, profile, loadDonations, invalidateDonations) {
+  const wrap = h("div", { class: "donation-list-item-wrap" });
   const row = h("div", { class: "list-item" });
   const dateLabel = d.donation_date ? bnDate(d.donation_date) : "—";
   const textSpan = h("span", {}, [dateLabel, d.hospital_name ? h("span", { class: "muted" }, ` · ${d.hospital_name}`) : null]);
   row.appendChild(textSpan);
 
   const actions = h("div", { class: "list-item__actions" });
-  const editBtn = h("button", { type: "button", class: "btn-icon", title: "সম্পাদনা করুন", onclick: () => toggleDonationEditor(row, d, body, profile, loadDonations, invalidateDonations) }, icon("pencil", "small"));
+  const editBtn = h("button", { type: "button", class: "btn-icon", title: "সম্পাদনা করুন", onclick: () => toggleDonationEditor(wrap, d, body, profile, loadDonations, invalidateDonations) }, icon("pencil", "small"));
   const deleteBtn = h("button", { type: "button", class: "btn-icon", title: "ডিলিট করুন", onclick: async () => {
     if (!confirm("এই এন্ট্রিটি ডিলিট করতে চান?")) return;
     try {
@@ -658,11 +659,12 @@ function renderDonationListItem(d, body, profile, loadDonations, invalidateDonat
   actions.appendChild(editBtn);
   actions.appendChild(deleteBtn);
   row.appendChild(actions);
-  return row;
+  wrap.appendChild(row);
+  return wrap;
 }
 
-function toggleDonationEditor(row, d, body, profile, loadDonations, invalidateDonations) {
-  const existing = row.querySelector(".donation-editor");
+function toggleDonationEditor(wrap, d, body, profile, loadDonations, invalidateDonations) {
+  const existing = wrap.querySelector(".donation-editor");
   if (existing) { existing.remove(); return; }
   const editor = h("div", { class: "donation-editor stack", style: "margin-top:10px;width:100%" });
   const dateField = h("input", { type: "date", max: todayIsoDate() });
@@ -688,7 +690,7 @@ function toggleDonationEditor(row, d, body, profile, loadDonations, invalidateDo
       renderDonationsTab(body, profile, loadDonations, invalidateDonations);
     } catch (e) { toast(e.message); }
   };
-  row.appendChild(editor);
+  wrap.appendChild(editor);
 }
 
 // Profile tab's own "calls" section - RECEIVED calls only, last 5, with

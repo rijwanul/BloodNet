@@ -22,7 +22,7 @@ id = "05e5391a73504cd38b96caf6c7627179"
 # src/lib/scheduled.js). Hourly is frequent enough that the 48h check never
 # drifts by more than an hour.
 [triggers]
-crons = ["0 * * * *"]
+crons = ["*/5 * * * *"]
 
 # Secrets (set via: wrangler secret put <NAME>)
 #   ROOT_ADMIN_MOBILE      - root admin's 11-digit BD mobile number (login identifier)

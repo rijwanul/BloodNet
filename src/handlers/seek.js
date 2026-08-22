@@ -6,7 +6,7 @@ import { logActivity } from "../lib/activity.js";
 import { sendNotificationSms, fillTemplate } from "../lib/sms.js";
 import { statusLabel, CANNOT_REASON_LABELS_BN as CANNOT_REASON_LABELS } from "../lib/callLabels.js";
 
-async function wakeSnoozedDonors(db) {
+export async function wakeSnoozedDonors(db) {
   await db
     .prepare(
       "UPDATE users SET eligibility_status = 'on', eligibility_snooze_until = NULL, eligibility_snooze_reason = NULL WHERE is_donor = 1 AND eligibility_status = 'snoozed' AND eligibility_snooze_until IS NOT NULL AND eligibility_snooze_until <= datetime('now')"

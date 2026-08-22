@@ -189,6 +189,15 @@ textarea { resize: vertical; min-height: 80px; }
    rather than the default left/right single-line layout. */
 .list-item--stacked { display: block; }
 .list-item--stacked > div:first-child { margin-bottom: 2px; }
+/* Donation entries: row + its (optional) inline editor stacked below it,
+   as a single unit so the editor never competes for horizontal space
+   inside the flex row above it. .list-item is no longer a direct child of
+   .card here, so the border/last-child spacing is moved up to this
+   wrapper instead, and the inner .list-item's own border is suppressed. */
+.donation-list-item-wrap { border-bottom: 1px solid var(--line); }
+.donation-list-item-wrap:last-child { border-bottom: none; }
+.donation-list-item-wrap .list-item { border-bottom: none; padding-bottom: 0; }
+.donation-list-item-wrap .donation-editor { padding-bottom: 12px; }
 /* Public profile tab strip (tab view) */
 .profile-tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--line); padding-bottom: 0; }
 .profile-tabs__btn { border: none; background: transparent; padding: 10px 14px; font-size: 0.88rem; font-weight: 600; color: var(--ink-soft); cursor: pointer; white-space: nowrap; border-bottom: 2px solid transparent; }

@@ -1,6 +1,16 @@
 import { getSettings, setSettings } from "./settings.js";
 import { sendNotificationSms, fillTemplate } from "./sms.js";
 import { logActivity } from "./activity.js";
+import { wakeSnoozedDonors } from "../handlers/seek.js";
+
+// Runs the same wake-up sweep that already happens lazily on every
+// search/profile view (see seek.js/profile.js), but on a schedule - so a
+// donor whose snooze period ends isn't stuck showing "স্বয়ংক্রিয়ভাবে চালু
+// হবে" indefinitely just because nobody happened to search for donors or
+// visit a profile page after their timer ran out.
+export async function runSnoozeWakeSweep(env) {
+  await wakeSnoozedDonors(env.DB);
+}
 
 // Finds donors who said "can_donate" on a call (pending_donation_prompt=1),
 // where 48h have passed since that prompt and no reminder has been sent
