@@ -5,7 +5,7 @@ import * as donor from "./handlers/donor.js";
 import * as profile from "./handlers/profile.js";
 import * as calls from "./handlers/calls.js";
 import * as admin from "./handlers/admin.js";
-import { runDonationReminderSweep, runActivityLogAutoPurge, runSmsDailyReset, runSnoozeWakeSweep } from "./lib/scheduled.js";
+import { runDonationReminderSweep, runActivityLogAutoPurge, runSmsDailyReset } from "./lib/scheduled.js";
 
 export default {
   async fetch(request, env, ctx) {
@@ -33,7 +33,6 @@ export default {
   // donation 48h later, and haven't already been reminded - then sends the
   // configurable reminder SMS (see lib/scheduled.js).
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(runSnoozeWakeSweep(env));
     ctx.waitUntil(runDonationReminderSweep(env));
     ctx.waitUntil(runActivityLogAutoPurge(env));
     ctx.waitUntil(runSmsDailyReset(env));
@@ -134,6 +133,7 @@ async function routeApi(request, env, path) {
   if (path === "/api/admin/sms-analytics" && method === "GET") return admin.handleSmsAnalyticsGet(request, env);
   if (path === "/api/admin/sms-analytics/reset" && method === "POST") return admin.handleSmsAnalyticsReset(request, env);
   if (path === "/api/admin/sms-limit-override" && method === "POST") return admin.handleSmsLimitOverride(request, env);
+  if (path === "/api/admin/claim-unregistered-donorbd-slugs" && method === "POST") return admin.handleClaimUnregisteredDonorbdSlugs(request, env);
 
   // Public locations list is also used outside admin (signup forms etc.)
   if (path === "/api/locations" && method === "GET") return admin.handleLocationsList(request, env);

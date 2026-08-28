@@ -1,4 +1,5 @@
-import { ok, err, readJson, isValidBdMobile, isValidBloodGroup, isValidUsernameSlug, hashPassword, nowIso, genUniqueRandomSlug, getReservedSlugSet } from "../lib/util.js";
+import { ok, err, readJson, isValidBdMobile, isValidBloodGroup, isValidUsernameSlug, hashPassword, nowIso, getReservedSlugSet } from "../lib/util.js";
+import { genAndClaimRandomSlug, claimUnregisteredDonorbdSlugs } from "../lib/donorbd.js";
 import { getSettings, setSettings, settingInt } from "../lib/settings.js";
 import { getCurrentUser } from "../lib/authctx.js";
 import { hasPermission, isAnyAdmin, PERMISSIONS } from "../lib/permissions.js";
@@ -81,16 +82,16 @@ export async function handleUserCreate(request, env) {
 
   const passwordHash = await hashPassword(password);
   const mustChange = body.requireChangeOnLogin ? 1 : 0;
-  const reserved = await getReservedSlugSet(env.DB);
-  const randomSlug = await genUniqueRandomSlug(env.DB, reserved);
+  const settings = await getSettings(env.DB);
+  const baseUrl = new URL(request.url).origin;
+  const { slug: randomSlug, donorbdRegistered } = await genAndClaimRandomSlug(env.DB, settings, baseUrl);
   const res = await env.DB
     .prepare(
-      "INSERT INTO users (mobile, password_hash, name, is_donor, blood_group, must_change_password, username_slug, username_display, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO users (mobile, password_hash, name, is_donor, blood_group, must_change_password, username_slug, username_display, donorbd_slug_registered, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
-    .bind(mobile, passwordHash, body.name || null, body.isDonor ? 1 : 0, isValidBloodGroup(body.bloodGroup) ? body.bloodGroup : null, mustChange, randomSlug.toLowerCase(), randomSlug, nowIso(), nowIso())
+    .bind(mobile, passwordHash, body.name || null, body.isDonor ? 1 : 0, isValidBloodGroup(body.bloodGroup) ? body.bloodGroup : null, mustChange, randomSlug.toLowerCase(), randomSlug, donorbdRegistered ? 1 : 0, nowIso(), nowIso())
     .run();
 
-  const settings = await getSettings(env.DB);
   const { sendNotificationSms, fillTemplate } = await import("../lib/sms.js");
   const msg = fillTemplate(settings.sms_account_created_import, { password }, settings);
   await sendNotificationSms(env.DB, settings, mobile, msg, "account_created_import");
@@ -257,7 +258,7 @@ export async function handleUsersImport(request, env) {
   const errors = [];
   const settings = await getSettings(env.DB);
   const { sendNotificationSms, fillTemplate } = await import("../lib/sms.js");
-  const reserved = await getReservedSlugSet(env.DB);
+  const baseUrl = new URL(request.url).origin;
 
   for (const row of rows) {
     const mobile = (row.mobile || "").trim();
@@ -266,12 +267,12 @@ export async function handleUsersImport(request, env) {
     if (existing) { errors.push(`${mobile}: ইতিমধ্যে আছে`); continue; }
     const password = row.password || Math.random().toString(36).slice(2, 10);
     const passwordHash = await hashPassword(password);
-    const randomSlug = await genUniqueRandomSlug(env.DB, reserved);
+    const { slug: randomSlug, donorbdRegistered } = await genAndClaimRandomSlug(env.DB, settings, baseUrl);
     await env.DB
       .prepare(
-        "INSERT INTO users (mobile, password_hash, name, blood_group, is_donor, must_change_password, username_slug, username_display, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO users (mobile, password_hash, name, blood_group, is_donor, must_change_password, username_slug, username_display, donorbd_slug_registered, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       )
-      .bind(mobile, passwordHash, row.name || null, isValidBloodGroup(row.bloodGroup) ? row.bloodGroup : null, row.isDonor === "1" || row.isDonor === "true" ? 1 : 0, requireChangeOnLogin ? 1 : 0, randomSlug.toLowerCase(), randomSlug, nowIso(), nowIso())
+      .bind(mobile, passwordHash, row.name || null, isValidBloodGroup(row.bloodGroup) ? row.bloodGroup : null, row.isDonor === "1" || row.isDonor === "true" ? 1 : 0, requireChangeOnLogin ? 1 : 0, randomSlug.toLowerCase(), randomSlug, donorbdRegistered ? 1 : 0, nowIso(), nowIso())
       .run();
     const msg = fillTemplate(settings.sms_account_created_import, { password }, settings);
     await sendNotificationSms(env.DB, settings, mobile, msg, "account_created_import");
@@ -714,4 +715,24 @@ export async function handleSmsLimitOverride(request, env) {
   }
   await logActivity(env.DB, { actorUser: admin, category: "admin", actionText: `${ids.length} জন ইউজারের SMS লিমিট ওভাররাইড আপডেট করেছেন` });
   return ok({ updated: true });
+}
+
+// Admin sweep: claims a donor.bd username for every account that doesn't
+// have one registered there yet - either the exact slug they already have
+// locally (if still available on donor.bd) or a freshly generated random
+// one otherwise. See claimUnregisteredDonorbdSlugs in lib/donorbd.js for
+// the actual per-user logic.
+export async function handleClaimUnregisteredDonorbdSlugs(request, env) {
+  const { user: admin, resp } = await requirePerm(request, env, "manage_users");
+  if (resp) return resp;
+  const settings = await getSettings(env.DB);
+  const baseUrl = new URL(request.url).origin;
+  const result = await claimUnregisteredDonorbdSlugs(env.DB, settings, baseUrl);
+  if (!result.configured) return err("donor.bd কনফিগার করা নেই (Site API সেটিংসে API Key/Base URL দিন)");
+  await logActivity(env.DB, {
+    actorUser: admin,
+    category: "admin",
+    actionText: `donor.bd আনরেজিস্টার্ড ইউজারনেইম ক্লেইম করেছেন: ${result.fixed}টি সফল, ${result.failed}টি ব্যর্থ`,
+  });
+  return ok(result);
 }

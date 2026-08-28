@@ -734,6 +734,45 @@ ViewsAdmin.siteApis = async function (view) {
       toast("সংরক্ষণ করা হয়েছে");
     } catch (e) { toast(e.message); }
   };
+
+  // Sweep: claims a donor.bd entry for every account whose username_slug
+  // is missing or was never successfully registered there
+  // (donorbd_slug_registered = 0) - reuses their existing slug if it's
+  // still free on donor.bd, otherwise generates and claims a new random
+  // one. Separate card since it's an action, not a settings field.
+  const sweepCard = h("div", { class: "card stack" });
+  sweepCard.appendChild(h("h3", {}, "আনরেজিস্টার্ড ইউজারনেইম ক্লেইম করুন"));
+  sweepCard.appendChild(h("p", { class: "small muted" }, "যেসব ইউজারের ইউজারনেইম এখনো donor.bd তে রেজিস্টার্ড হয়নি, তাদের জন্য এখনকার ইউজারনেইম (যদি এভেইলেবল থাকে) অথবা নতুন র‍্যান্ডম ইউজারনেইম ক্লেইম করা হবে।"));
+  const sweepBtn = h("button", { class: "btn btn-outline" }, "ক্লেইম করুন");
+  const sweepResult = h("div", { style: "margin-top:10px" });
+  sweepCard.appendChild(sweepBtn);
+  sweepCard.appendChild(sweepResult);
+  content.appendChild(sweepCard);
+
+  sweepBtn.onclick = async () => {
+    sweepBtn.disabled = true;
+    sweepResult.innerHTML = "";
+    setLoading(sweepResult);
+    try {
+      const res = await API.post("/api/admin/claim-unregistered-donorbd-slugs", {});
+      sweepResult.innerHTML = "";
+      sweepResult.appendChild(h("p", {}, `${toBnDigits(res.fixed)}টি সফল, ${toBnDigits(res.failed)}টি ব্যর্থ।`));
+      if (res.details.length) {
+        const list = h("div", { class: "stack" });
+        res.details.forEach((d) => {
+          list.appendChild(h("div", { class: "list-item" }, [
+            h("span", {}, d.mobile), h("span", { class: d.ok ? "muted" : "field-error" }, d.ok ? `→ ${d.slug}` : `${d.slug} - ব্যর্থ`),
+          ]));
+        });
+        sweepResult.appendChild(list);
+      }
+    } catch (e) {
+      sweepResult.innerHTML = "";
+      toast(e.message);
+    } finally {
+      sweepBtn.disabled = false;
+    }
+  };
 };
 
 // ------------------------------------------------------------ SITE SETTINGS

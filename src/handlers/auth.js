@@ -1,9 +1,10 @@
-import { ok, err, readJson, isValidBdMobile, genOtp, hashPassword, verifyPassword, nowIso, genUniqueRandomSlug, getReservedSlugSet } from "../lib/util.js";
+import { ok, err, readJson, isValidBdMobile, genOtp, hashPassword, verifyPassword, nowIso } from "../lib/util.js";
 import { getSettings, settingInt } from "../lib/settings.js";
 import { storeOtp, verifyOtp } from "../lib/kvstore.js";
 import { dispatchOtp, sendNotificationSms, fillTemplate } from "../lib/sms.js";
 import { createSessionCookie, clearSessionCookie, getCurrentUser, publicUserFields } from "../lib/authctx.js";
 import { logActivity } from "../lib/activity.js";
+import { genAndClaimRandomSlug } from "../lib/donorbd.js";
 
 const OTP_PURPOSES = ["register", "reset", "change_mobile"];
 
@@ -71,11 +72,14 @@ export async function handleRegister(request, env) {
   // Every account gets a random shareable username at creation time (per
   // spec) so no profile is ever left without a bookmarkable URL - the
   // donor can still change it later via the normal username-claim flow.
-  const reserved = await getReservedSlugSet(env.DB);
-  const randomSlug = await genUniqueRandomSlug(env.DB, reserved);
+  // Also registered on donor.bd immediately (donorbd_slug_registered
+  // tracks whether that succeeded - if not, the admin panel's "claim
+  // unregistered slugs" sweep will retry it later).
+  const baseUrl = new URL(request.url).origin;
+  const { slug: randomSlug, donorbdRegistered } = await genAndClaimRandomSlug(env.DB, settings, baseUrl);
   const res = await env.DB
-    .prepare("INSERT INTO users (mobile, password_hash, username_slug, username_display, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .bind(mobile, passwordHash, randomSlug.toLowerCase(), randomSlug, nowIso(), nowIso())
+    .prepare("INSERT INTO users (mobile, password_hash, username_slug, username_display, donorbd_slug_registered, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(mobile, passwordHash, randomSlug.toLowerCase(), randomSlug, donorbdRegistered ? 1 : 0, nowIso(), nowIso())
     .run();
   const userId = res.meta.last_row_id;
 
