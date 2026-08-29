@@ -1,16 +1,6 @@
 import { getSettings, setSettings } from "./settings.js";
 import { sendNotificationSms, fillTemplate } from "./sms.js";
 import { logActivity } from "./activity.js";
-import { wakeSnoozedDonors } from "../handlers/seek.js";
-
-// Runs the same wake-up sweep that already happens lazily on every
-// search/profile view (see seek.js/profile.js), but on a schedule - so a
-// donor whose snooze period ends isn't stuck showing "স্বয়ংক্রিয়ভাবে চালু
-// হবে" indefinitely just because nobody happened to search for donors or
-// visit a profile page after their timer ran out.
-export async function runSnoozeWakeSweep(env) {
-  await wakeSnoozedDonors(env.DB);
-}
 
 // Finds donors who said "can_donate" on a call (pending_donation_prompt=1),
 // where 48h have passed since that prompt and no reminder has been sent
@@ -88,4 +78,99 @@ async function archiveAndClearSmsRecords(db) {
       .run();
   }
   await db.prepare("UPDATE users SET sms_highest_daily_count = 0, sms_highest_daily_date = NULL").run();
+}
+
+// Reminds a donor who manually turned eligibility OFF (not 'snoozed' -
+// that auto-resuming state is handled by runEligibilitySnoozeWakeSweep
+// below) that they're free to turn it back on, once ALL of these hold:
+//  1. eligibility_status = 'off' (a deliberate choice, not a temporary pause)
+//  2. last_donation_date is older than the site's wait timeline
+//     (settings.eligibility_wait_months)
+//  3. they turned it off at least eligibility_reopen_delay_days ago (admin-
+//     configurable, default 15) - so someone who JUST turned it off
+//     manually isn't immediately nagged, even if their last donation
+//     already happens to be old enough
+//  4. no reopen-reminder was sent to them in the last
+//     eligibility_reopen_repeat_days (admin-configurable, default 15) -
+//     repeat-suppression so this doesn't re-send every sweep run
+// This is notification-only - it does NOT flip eligibility_status back to
+// 'on' automatically. 'off' was a deliberate choice; the donor decides.
+// eligibility_off_since is stamped only when a donor chooses indefinite
+// "off" themselves (see donor.js) - never for the temporary snooze states,
+// and cleared whenever they turn eligibility on again or stop being a
+// donor entirely (both of which also take them out of this query's WHERE
+// clause, is_donor=1 AND eligibility_status='off').
+export async function runEligibilityReopenSweep(env) {
+  const settings = await getSettings(env.DB);
+  if (settings.sms_enabled_eligibility_reopened === "0") return;
+  const waitMonths = parseInt(settings.eligibility_wait_months, 10) || 3;
+  const delayDays = parseInt(settings.eligibility_reopen_delay_days, 10) || 15;
+  const repeatDays = parseInt(settings.eligibility_reopen_repeat_days, 10) || 15;
+
+  const { results } = await env.DB
+    .prepare(
+      `SELECT id, mobile FROM users
+       WHERE deleted = 0 AND is_donor = 1 AND eligibility_status = 'off'
+         AND last_donation_date IS NOT NULL
+         AND date(last_donation_date, '+' || ? || ' months') <= date('now')
+         AND eligibility_off_since IS NOT NULL
+         AND datetime(eligibility_off_since, '+' || ? || ' days') <= datetime('now')
+         AND (eligibility_reopen_note_sent_at IS NULL OR datetime(eligibility_reopen_note_sent_at, '+' || ? || ' days') <= datetime('now'))`
+    )
+    .bind(waitMonths, delayDays, repeatDays)
+    .all();
+
+  for (const donor of results) {
+    const msg = fillTemplate(settings.sms_eligibility_reopened, { siteTitle: settings.site_title || "BloodNet v2" }, settings);
+    const result = await sendNotificationSms(env.DB, settings, donor.mobile, msg, "eligibility_reopened");
+    // Timestamp is recorded regardless of send success/failure - a
+    // provider outage shouldn't cause a burst of retries every sweep
+    // tick; the next attempt naturally waits out the same repeat window.
+    await env.DB.prepare("UPDATE users SET eligibility_reopen_note_sent_at = datetime('now') WHERE id = ?").bind(donor.id).run();
+    if (result.sent) {
+      await logActivity(env.DB, {
+        category: "system",
+        actionText: `রক্তদানের এলিজিবিলিটি পুনরায় চালুর রিমাইন্ডার এসএমএস পাঠানো হয়েছে: ${donor.mobile}`,
+      });
+    }
+  }
+}
+
+// Trigger 2: donors whose 'snoozed' status just auto-expired (their
+// eligibility_snooze_until has passed). Unlike Trigger 1, this DOES flip
+// them to 'on' - a snooze was always meant to auto-resume (that's the
+// whole point of the temporary states: today_off/2h/6h/until_date), so
+// there's no "should we really turn this on" judgment call being made
+// here, just notifying them it happened. The reactive per-request wake in
+// seek.js's wakeSnoozedDonors() still runs too (so search results are
+// correct immediately rather than waiting for the next cron tick) - that
+// one deliberately stays silent (bulk UPDATE, no per-row loop, no SMS) so
+// a requester's search never triggers an SMS send as a side effect; THIS
+// sweep is what actually sends the notification, on its own schedule.
+export async function runEligibilitySnoozeWakeSweep(env) {
+  const settings = await getSettings(env.DB);
+  const { results } = await env.DB
+    .prepare(
+      `SELECT id, mobile FROM users
+       WHERE deleted = 0 AND is_donor = 1 AND eligibility_status = 'snoozed'
+         AND eligibility_snooze_until IS NOT NULL AND eligibility_snooze_until <= datetime('now')`
+    )
+    .all();
+
+  for (const donor of results) {
+    await env.DB
+      .prepare("UPDATE users SET eligibility_status = 'on', eligibility_snooze_until = NULL, eligibility_snooze_reason = NULL WHERE id = ?")
+      .bind(donor.id)
+      .run();
+    if (settings.sms_enabled_eligibility_reopened !== "0") {
+      const msg = fillTemplate(settings.sms_eligibility_reopened, { siteTitle: settings.site_title || "BloodNet v2" }, settings);
+      const result = await sendNotificationSms(env.DB, settings, donor.mobile, msg, "eligibility_reopened");
+      if (result.sent) {
+        await logActivity(env.DB, {
+          category: "system",
+          actionText: `স্থগিত-শেষে এলিজিবিলিটি চালু হওয়ার নোটিফিকেশন এসএমএস পাঠানো হয়েছে: ${donor.mobile}`,
+        });
+      }
+    }
+  }
 }

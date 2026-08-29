@@ -246,6 +246,16 @@ const CANNOT_REASONS = [
   { key: "no_reason_given", label: "কারণ জানান নি" },
 ];
 
+// Sub-reasons for the "কল করিনি" status - "other" (অন্যান্য) is a normal
+// fixed reason like the first two, submitted immediately with no text
+// required. The free-text custom option ("কাষ্টম ব্যখ্যা") is separate,
+// rendered below as its own button that reveals an input field.
+const NOT_CALLED_REASONS = [
+  { key: "note_reason", label: "নোটের কারণে" },
+  { key: "blood_not_needed", label: "রক্ত প্রয়োজন নেই" },
+  { key: "other", label: "অন্যান্য" },
+];
+
 async function showNextDonor(box, bloodGroup) {
   box.innerHTML = "";
   setLoading(box);
@@ -292,13 +302,31 @@ function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
   if (donor.note) card.appendChild(h("div", { class: "donor-card__note" }, `নোট: ${donor.note}`));
 
   const callBtn = h("button", { class: "btn btn-primary" }, [icon("phone", "small"), " কল করুন (" + donor.mobileMasked + ")"]);
+  const whatsappBtn = h("a", { class: "btn btn-outline", style: "display:none;margin-top:8px", target: "_blank", rel: "noopener" }, [icon("message-square", "small"), " হোয়াটসঅ্যাপে ওপেন করুন"]);
   const statusBox = h("div", { style: "display:none;margin-top:14px" });
   card.appendChild(callBtn);
+  card.appendChild(whatsappBtn);
   card.appendChild(statusBox);
   box.appendChild(card);
 
   const timerSeconds = (APP.settings && APP.settings.callStatusTimerSeconds) || 20;
   let revealed = false;
+
+  // Builds the wa.me link for the real (unmasked) number - only ever
+  // called once the number is actually known (see the two call sites
+  // below), matching the "below আবার কল করুন" placement in the spec since
+  // that text change is the same moment the number becomes known.
+  function showWhatsappButton(realMobile) {
+    // BD mobiles are stored as 11 digits starting with 0 (e.g.
+    // 01383600577) - wa.me needs the full international number with the
+    // country code and no leading zero (8801383600577).
+    const intlNumber = "88" + realMobile.replace(/^0/, "");
+    const template = (APP.settings && APP.settings.whatsappSeekMessage) ||
+      "আসসালামুআলাইকুম। আশা করি ভালো আছেন। {bloodGroup} রক্তদাতা খুঁজছিলাম। আপনি কি এভেইলেবল আছেন?";
+    const message = template.replace(/\{bloodGroup\}/g, bloodGroup);
+    whatsappBtn.href = `https://wa.me/${intlNumber}?text=${encodeURIComponent(message)}`;
+    whatsappBtn.style.display = "inline-flex";
+  }
 
   // If the call was already started before a refresh (number already
   // revealed, countdown already run or in progress server-side), skip
@@ -307,6 +335,9 @@ function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
   // exact mobile number itself isn't re-shown here (avoids a second
   // reveal call just to redisplay it), but the button still redials
   // correctly since donor-number is re-fetched on click same as before.
+  // The WhatsApp button, however, DOES need the real number to build its
+  // link, so it stays hidden in this branch until the person actually
+  // taps কল/আবার কল করুন at least once this page load.
   if (alreadyCalled) {
     revealed = true;
     callBtn.innerHTML = "";
@@ -315,7 +346,7 @@ function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
     callBtn.dataset.needsNumber = "1";
     statusBox.dataset.started = "1";
     statusBox.style.display = "block";
-    renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn);
+    renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn);
   }
 
   callBtn.onclick = async () => {
@@ -339,6 +370,7 @@ function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
       callBtn.innerHTML = "";
       callBtn.appendChild(icon("phone", "small"));
       callBtn.append(" আবার কল করুন (" + realMobile + ")");
+      showWhatsappButton(realMobile);
     }
     window.location.href = `tel:${callBtn.dataset.mobile}`;
 
@@ -353,7 +385,7 @@ function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
       if (seconds <= 0) {
         clearInterval(timer);
         timerLine.remove();
-        renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn);
+        renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn);
       } else {
         timerLine.textContent = `${toBnDigits(seconds)} সেকেন্ড পর ষ্ট্যাটাস আপডেট করতে পারবেন…`;
       }
@@ -364,7 +396,7 @@ function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
     h("a", { href: "#", onclick: (e) => { e.preventDefault(); renderBloodGroupStep(document.getElementById("view")); } }, "আবার শুরু")));
 }
 
-function renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn) {
+function renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn) {
   statusBox.innerHTML = "";
   statusBox.appendChild(h("p", { class: "small muted" }, "কলের পর ষ্ট্যাটাস জানান:"));
   const options = [
@@ -372,38 +404,70 @@ function renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn) {
     { key: "not_picked_up", label: "কল ধরেনি" },
     { key: "cannot_donate", label: "রক্ত দিতে পারবে না" },
     { key: "can_donate", label: "রক্ত দিতে পারবে" },
+    { key: "not_called", label: "কল করিনি" },
   ];
   const row = h("div", { class: "stack" });
   options.forEach((opt) => {
-    row.appendChild(h("button", { class: "btn btn-outline", onclick: () => handleCallStatus(statusBox, box, donor, bloodGroup, opt.key, callBtn) }, opt.label));
+    row.appendChild(h("button", { class: "btn btn-outline", onclick: () => handleCallStatus(statusBox, box, donor, bloodGroup, opt.key, callBtn, whatsappBtn) }, opt.label));
   });
   statusBox.appendChild(row);
 }
 
-async function handleCallStatus(statusBox, box, donor, bloodGroup, status, callBtn) {
+async function handleCallStatus(statusBox, box, donor, bloodGroup, status, callBtn, whatsappBtn) {
   if (status === "cannot_donate") {
     statusBox.innerHTML = "";
     const card = h("div", { class: "stack" });
     card.appendChild(h("h3", {}, "কেন রক্ত দিতে পারবেন না?"));
     CANNOT_REASONS.forEach((r) => {
-      card.appendChild(h("button", { class: "btn btn-outline", onclick: () => submitCallStatus(statusBox, box, donor, bloodGroup, status, r.key, callBtn) }, r.label));
+      card.appendChild(h("button", { class: "btn btn-outline", onclick: () => submitCallStatus(statusBox, box, donor, bloodGroup, status, r.key, callBtn, whatsappBtn) }, r.label));
     });
     statusBox.appendChild(card);
     return;
   }
-  await submitCallStatus(statusBox, box, donor, bloodGroup, status, null, callBtn);
+  if (status === "not_called") {
+    renderNotCalledReasons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn);
+    return;
+  }
+  await submitCallStatus(statusBox, box, donor, bloodGroup, status, null, callBtn, whatsappBtn);
 }
 
-async function submitCallStatus(statusBox, box, donor, bloodGroup, status, cannotReason, callBtn) {
+// "কল করিনি" sub-question - three fixed reasons (all submitted
+// immediately on tap, "অন্যান্য" included) plus a separate "কাষ্টম ব্যখ্যা"
+// button below them that reveals a free-text field (up to 30 chars) with
+// its own submit button - that's the only option here needing typed text.
+function renderNotCalledReasons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn) {
+  statusBox.innerHTML = "";
+  const card = h("div", { class: "stack" });
+  card.appendChild(h("h3", {}, "কেন কল করেননি?"));
+  NOT_CALLED_REASONS.forEach((r) => {
+    card.appendChild(h("button", { class: "btn btn-outline", onclick: () => submitCallStatus(statusBox, box, donor, bloodGroup, "not_called", r.key, callBtn, whatsappBtn) }, r.label));
+  });
+
+  const customField = h("input", { type: "text", maxlength: "30", placeholder: "নিজে লিখুন (সর্বোচ্চ ৩০ অক্ষর)", style: "display:none;margin-top:6px" });
+  const submitCustomBtn = h("button", { class: "btn btn-primary", style: "display:none;margin-top:6px", onclick: () => {
+    const text = customField.value.trim();
+    if (!text) { toast("লিখুন"); return; }
+    submitCallStatus(statusBox, box, donor, bloodGroup, "not_called", text, callBtn, whatsappBtn);
+  } }, "সাবমিট করুন");
+  customField.oninput = () => { submitCustomBtn.style.display = customField.value.trim() ? "block" : "none"; };
+  card.appendChild(h("button", { class: "btn btn-outline", onclick: () => { customField.style.display = "block"; customField.focus(); } }, "কাষ্টম ব্যখ্যা"));
+  card.appendChild(customField);
+  card.appendChild(submitCustomBtn);
+
+  statusBox.appendChild(card);
+}
+
+async function submitCallStatus(statusBox, box, donor, bloodGroup, status, cannotReason, callBtn, whatsappBtn) {
   try {
     await API.post("/api/seek/call-status", { donorId: donor.id, status, cannotReason });
   } catch (e) { toast(e.message); return; }
 
-  // Once a status is recorded, the call button is hidden - re-dialing from
-  // this card is no longer offered unless the requester explicitly says
-  // the status was a mistake and picks again ("ভুল হয়েছে? আবার নির্বাচন করুন"),
-  // which restores it.
+  // Once a status is recorded, the call button AND the WhatsApp button are
+  // both hidden - re-messaging/re-dialing from this card is no longer
+  // offered unless the requester explicitly says the status was a mistake
+  // and picks again ("ভুল হয়েছে? আবার নির্বাচন করুন"), which restores both.
   if (callBtn) callBtn.style.display = "none";
+  if (whatsappBtn) whatsappBtn.style.display = "none";
 
   statusBox.innerHTML = "";
   const resultCard = h("div", { class: "center stack" });
@@ -415,7 +479,11 @@ async function submitCallStatus(statusBox, box, donor, bloodGroup, status, canno
     // same call attempt instead of it being permanent.
     resultCard.appendChild(h("button", {
       class: "btn btn-outline",
-      onclick: () => { if (callBtn) callBtn.style.display = ""; renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn); },
+      onclick: () => {
+        if (callBtn) callBtn.style.display = "";
+        if (whatsappBtn && whatsappBtn.href) whatsappBtn.style.display = "inline-flex";
+        renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn);
+      },
     }, "ভুল হয়েছে? আবার নির্বাচন করুন"));
     resultCard.appendChild(h("button", { class: "btn btn-primary", onclick: () => showNextDonor(box, bloodGroup) }, "পরবর্তী ডোনার দেখুন"));
   }
@@ -480,8 +548,7 @@ ViewsPublic.publicProfile = async function (view, slug) {
       // Timer only makes sense (and is only shown) for the temporary
       // "snoozed" state - "on"/"off" have no countdown to display.
       if (profile.eligibilityStatus === "snoozed" && profile.eligibilitySnoozeUntil) {
-        const countdownLine = h("div", { style: "margin-top:2px" }, inlineCountdown(profile.eligibilitySnoozeUntil));
-        badgeRow.appendChild(countdownLine);
+        badgeRow.appendChild(inlineCountdown(profile.eligibilitySnoozeUntil));
       }
       card.appendChild(badgeRow);
     }

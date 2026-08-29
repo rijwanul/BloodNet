@@ -6,7 +6,7 @@ import { logActivity } from "../lib/activity.js";
 import { sendNotificationSms, fillTemplate } from "../lib/sms.js";
 import { statusLabel, CANNOT_REASON_LABELS_BN as CANNOT_REASON_LABELS } from "../lib/callLabels.js";
 
-export async function wakeSnoozedDonors(db) {
+async function wakeSnoozedDonors(db) {
   await db
     .prepare(
       "UPDATE users SET eligibility_status = 'on', eligibility_snooze_until = NULL, eligibility_snooze_reason = NULL WHERE is_donor = 1 AND eligibility_status = 'snoozed' AND eligibility_snooze_until IS NOT NULL AND eligibility_snooze_until <= datetime('now')"
@@ -186,11 +186,21 @@ export async function handleSeekLock(request, env) {
 //    old pending entry) - directly targets that exact row, ownership-
 //    checked, with no lock requirement at all, since by the time someone
 //    is updating history from that page the seek session is long over.
+const VALID_CALL_STATUSES = new Set(["no_answer", "not_picked_up", "cannot_donate", "can_donate", "not_called"]);
+
 export async function handleSeekCallStatus(request, env) {
   const requester = await getCurrentUser(request, env);
   if (!requester) return err("লগইন প্রয়োজন", 401);
   const body = await readJson(request);
-  const { donorId, callId, status, cannotReason } = body;
+  const { donorId, callId, status } = body;
+  if (!VALID_CALL_STATUSES.has(status)) return err("অবৈধ ষ্ট্যাটাস");
+  // The "কাষ্টম ব্যখ্যা" free-text reason (not_called only) is capped at
+  // 30 chars, matching the frontend input's maxlength - trimmed and
+  // hard-capped server-side too so a direct API call can't bypass the UI
+  // limit. Fixed reason keys (note_reason, blood_not_needed, other,
+  // not_yet_eligible, etc) pass through untouched since they're well
+  // under 30 chars anyway.
+  const cannotReason = typeof body.cannotReason === "string" ? body.cannotReason.trim().slice(0, 30) : body.cannotReason;
 
   if (callId) {
     const row = await env.DB.prepare("SELECT id, donor_id, status FROM calls WHERE id = ? AND requester_id = ?").bind(callId, requester.id).first();
@@ -302,7 +312,7 @@ async function applyCallStatus(env, requester, donorId, callRowId, isCorrection,
     logActivity(env.DB, {
       actorUser: requester,
       category: "call",
-      actionText: `${requester.mobile} → ${donor.mobile} কল করেছিলেন। ষ্ট্যাটাস: ${status}${cannotReason ? " (" + (CANNOT_REASON_LABELS[cannotReason] || cannotReason) + ")" : ""}${isCorrection ? " (সংশোধিত)" : ""}`,
+      actionText: `${requester.mobile} → ${donor.mobile} কল করেছিলেন। ষ্ট্যাটাস: ${statusLabel(status, cannotReason)}${isCorrection ? " (সংশোধিত)" : ""}`,
     }),
   ]);
 

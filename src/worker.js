@@ -5,7 +5,7 @@ import * as donor from "./handlers/donor.js";
 import * as profile from "./handlers/profile.js";
 import * as calls from "./handlers/calls.js";
 import * as admin from "./handlers/admin.js";
-import { runDonationReminderSweep, runActivityLogAutoPurge, runSmsDailyReset } from "./lib/scheduled.js";
+import { runDonationReminderSweep, runActivityLogAutoPurge, runSmsDailyReset, runEligibilityReopenSweep, runEligibilitySnoozeWakeSweep } from "./lib/scheduled.js";
 
 export default {
   async fetch(request, env, ctx) {
@@ -36,6 +36,8 @@ export default {
     ctx.waitUntil(runDonationReminderSweep(env));
     ctx.waitUntil(runActivityLogAutoPurge(env));
     ctx.waitUntil(runSmsDailyReset(env));
+    ctx.waitUntil(runEligibilityReopenSweep(env));
+    ctx.waitUntil(runEligibilitySnoozeWakeSweep(env));
   },
 };
 

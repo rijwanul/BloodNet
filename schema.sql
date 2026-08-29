@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS users (
   disabled               INTEGER NOT NULL DEFAULT 0,
   deleted                INTEGER NOT NULL DEFAULT 0,
   donorbd_slug_registered INTEGER NOT NULL DEFAULT 0,       -- whether current username_slug has a live donor.bd entry
+  eligibility_off_since TEXT DEFAULT NULL,                   -- when the donor manually turned eligibility off (used to delay the reopen-reminder SMS below - NOT set for 'snoozed', only for a deliberate 'off')
+  eligibility_reopen_note_sent_at TEXT DEFAULT NULL,          -- when the reopen-reminder SMS below was last sent, for its repeat-suppression window
   pending_donation_prompt INTEGER NOT NULL DEFAULT 0,       -- 1 = donor said "can_donate" on a call and hasn't logged/declined yet
   pending_donation_prompt_at TEXT DEFAULT NULL,              -- when the prompt was raised, for the 48h SMS reminder
   donation_reminder_sent INTEGER NOT NULL DEFAULT 0,        -- guards against sending the 48h reminder more than once per prompt
@@ -87,9 +89,10 @@ CREATE TABLE IF NOT EXISTS calls (
   donor_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   blood_group    TEXT NOT NULL,
   status         TEXT NOT NULL DEFAULT 'pending',
-    -- pending | no_status | no_answer | not_picked_up | cannot_donate | can_donate
+    -- pending | no_status | no_answer | not_picked_up | cannot_donate | can_donate | not_called
   cannot_reason  TEXT DEFAULT NULL,
-    -- not_yet_eligible | far_away | busy_today | no_reason_given
+    -- for cannot_donate: not_yet_eligible | far_away | busy_today | no_reason_given
+    -- for not_called: note_reason | blood_not_needed | <free text up to 30 chars, when "other" is chosen>
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -217,6 +220,11 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('sms_eligibility_change_by_call', 'আপনার এলিজিবিলিটি একটি কলের কারণে পরিবর্তন হয়েছে। ষ্ট্যাটাস: {status}'),
   ('sms_enabled_donation_reminder', '1'),
   ('sms_donation_reminder', '({siteTitle}) সম্প্রতি রক্তদান করেছেন? এন্ট্রি বা ষ্ট্যাটাস আপডেট করে নিন!'),
+  ('sms_eligibility_reopened', '{siteTitle} রক্তদানের সময় হয়েছে। করে থাকলে প্রোফাইল আপডেট করে নিন এখনই!'),
+  ('sms_enabled_eligibility_reopened', '1'),
+  ('eligibility_reopen_delay_days', '15'),
+  ('eligibility_reopen_repeat_days', '15'),
+  ('whatsapp_seek_message', 'আসসালামুআলাইকুম। আশা করি ভালো আছেন। {bloodGroup} রক্তদাতা খুঁজছিলাম। আপনি কি এভেইলেবল আছেন?'),
   ('sms_daily_limit_user_initiated', '3'),
   ('sms_daily_limit_system', '3'),
   ('sms_over_limit_otp_message', 'আপনার দৈনিক এসএমএস লিমিট শেষ হয়েছে। 01883-600680 নাম্বারে কল করুন'),

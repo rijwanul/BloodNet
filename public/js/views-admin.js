@@ -10,6 +10,7 @@ const ADMIN_NAV_ITEMS = [
   ["/admin/site-apis", "key", "সাইট এপিআই"],
   ["/admin/site-settings", "settings-2", "সাইট সেটিংস"],
   ["/admin/locations", "map-pin", "লোকেশন"],
+  ["/admin/help", "help-circle", "সহায়িকা"],
 ];
 
 function adminNav(active) {
@@ -579,6 +580,7 @@ ViewsAdmin.smsSettings = async function (view) {
     ["sms_enabled_password_reset", "এডমিন কর্তৃক পাসওয়ার্ড রিসেট"],
     ["sms_enabled_eligibility_change_by_call", "কলের কারণে এলিজিবিলিটি পরিবর্তন"],
     ["sms_enabled_donation_reminder", "৪৮ ঘন্টা পর রক্তদান রিমাইন্ডার"],
+    ["sms_enabled_eligibility_reopened", "এলিজিবিলিটি পুনরায় শুরু (মেয়াদ শেষ/স্থগিত থেকে চালু)"],
   ];
   const toggleChecks = {};
   TOGGLE_TYPES.forEach(([key, label]) => {
@@ -602,6 +604,7 @@ ViewsAdmin.smsSettings = async function (view) {
     ["sms_password_reset_by_admin", "এডমিন কর্তৃক পাসওয়ার্ড রিসেট", ["password"]],
     ["sms_eligibility_change_by_call", "কলের কারণে এলিজিবিলিটি পরিবর্তন", ["status"]],
     ["sms_donation_reminder", "৪৮ ঘন্টা পর রক্তদান রিমাইন্ডার", ["siteTitle"]],
+    ["sms_eligibility_reopened", "এলিজিবিলিটি পুনরায় শুরু (মেয়াদ শেষ/স্থগিত থেকে চালু)", ["siteTitle"]],
   ];
   const fields = {};
   templates.forEach(([key, label, vars]) => {
@@ -800,6 +803,24 @@ ViewsAdmin.siteSettings = async function (view) {
   const waitMonths = h("input", { type: "number", min: "0" }); waitMonths.value = s.eligibility_wait_months;
   card.appendChild(h("div", { class: "field" }, [h("label", {}, "এলিজিবিলিটি টাইমলাইন (মাস, ০ = ম্যানুয়াল)"), waitMonths]));
 
+  const reopenDelayDays = h("input", { type: "number", min: "0" }); reopenDelayDays.value = s.eligibility_reopen_delay_days || "15";
+  card.appendChild(h("div", { class: "field" }, [
+    h("label", {}, "ম্যানুয়ালি বন্ধ করার কতদিন পর প্রথম রিমাইন্ডার এসএমএস পাঠানো যাবে (দিন)"),
+    reopenDelayDays,
+  ]));
+  const reopenRepeatDays = h("input", { type: "number", min: "0" }); reopenRepeatDays.value = s.eligibility_reopen_repeat_days || "15";
+  card.appendChild(h("div", { class: "field" }, [
+    h("label", {}, "প্রতি কতদিন পর পর রিমাইন্ডার এসএমএস পুনরায় পাঠানো যাবে (দিন)"),
+    reopenRepeatDays,
+  ]));
+
+  const whatsappMsgField = h("textarea", {});
+  whatsappMsgField.value = s.whatsapp_seek_message || "";
+  card.appendChild(h("div", { class: "field" }, [
+    h("label", {}, "রক্ত দরকার পেজে হোয়াটসঅ্যাপ মেসেজ (ব্যবহারযোগ্য: {bloodGroup})"),
+    whatsappMsgField,
+  ]));
+
   const sessionDays = h("input", { type: "number", min: "1" }); sessionDays.value = s.session_days || "90";
   card.appendChild(h("div", { class: "field" }, [h("label", {}, "লগইন সেশন কতদিন মনে রাখবে (দিন)"), sessionDays]));
 
@@ -887,7 +908,9 @@ ViewsAdmin.siteSettings = async function (view) {
   saveBtn.onclick = async () => {
     const avatarList = avatarsField.value.split("\n").map((s) => s.trim()).filter(Boolean);
     const payload = {
-      eligibility_wait_months: waitMonths.value, self_deletion_enabled: delCb.checked, session_days: sessionDays.value,
+      eligibility_wait_months: waitMonths.value, eligibility_reopen_delay_days: reopenDelayDays.value, eligibility_reopen_repeat_days: reopenRepeatDays.value,
+      whatsapp_seek_message: whatsappMsgField.value,
+      self_deletion_enabled: delCb.checked, session_days: sessionDays.value,
       show_seek_option: seekCb.checked, show_join_option: joinCb.checked, show_logout_button: logoutCb.checked, profile_share_base_url: shareBaseField.value,
       otp_required_for_number_change: otpCb.checked, call_limit_count: callLimitCount.value, call_limit_minutes: callLimitMinutes.value,
       donor_lock_minutes: lockMinutes.value, call_status_timer_seconds: timerSeconds.value, mask_visible_digits: maskDigits.value,

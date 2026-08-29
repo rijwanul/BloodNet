@@ -21,6 +21,7 @@ const ROUTES = [
   { path: "/admin/site-apis", render: (p, v) => ViewsAdmin.siteApis(v) },
   { path: "/admin/site-settings", render: (p, v) => ViewsAdmin.siteSettings(v) },
   { path: "/admin/locations", render: (p, v) => ViewsAdmin.locations(v) },
+  { path: "/admin/help", render: (p, v) => ViewsAdmin.helpDoc(v) },
 ];
 
 // "/profile" is a stable fallback route (works even before a username

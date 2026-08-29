@@ -234,7 +234,7 @@ async function renderLocationChangeSection(view, status) {
 // snooze page), this returns just a small ticking text span suitable for
 // sitting next to a badge. Same UTC "Z" fix applies (see renderCountdown).
 function inlineCountdown(untilIso) {
-  const span = h("span", { class: "small muted" });
+  const span = h("span", { class: "small muted", style: "margin-left:6px" });
   const target = new Date(untilIso.replace(" ", "T") + "Z").getTime();
   const tick = () => {
     const diff = target - Date.now();
@@ -638,14 +638,13 @@ async function refreshDonationCounter() {
 // hospital-remembered entries show a dash in place of the date (backend
 // already sorts these below dated entries).
 function renderDonationListItem(d, body, profile, loadDonations, invalidateDonations) {
-  const wrap = h("div", { class: "donation-list-item-wrap" });
   const row = h("div", { class: "list-item" });
   const dateLabel = d.donation_date ? bnDate(d.donation_date) : "—";
   const textSpan = h("span", {}, [dateLabel, d.hospital_name ? h("span", { class: "muted" }, ` · ${d.hospital_name}`) : null]);
   row.appendChild(textSpan);
 
   const actions = h("div", { class: "list-item__actions" });
-  const editBtn = h("button", { type: "button", class: "btn-icon", title: "সম্পাদনা করুন", onclick: () => toggleDonationEditor(wrap, d, body, profile, loadDonations, invalidateDonations) }, icon("pencil", "small"));
+  const editBtn = h("button", { type: "button", class: "btn-icon", title: "সম্পাদনা করুন", onclick: () => toggleDonationEditor(row, d, body, profile, loadDonations, invalidateDonations) }, icon("pencil", "small"));
   const deleteBtn = h("button", { type: "button", class: "btn-icon", title: "ডিলিট করুন", onclick: async () => {
     if (!confirm("এই এন্ট্রিটি ডিলিট করতে চান?")) return;
     try {
@@ -659,12 +658,11 @@ function renderDonationListItem(d, body, profile, loadDonations, invalidateDonat
   actions.appendChild(editBtn);
   actions.appendChild(deleteBtn);
   row.appendChild(actions);
-  wrap.appendChild(row);
-  return wrap;
+  return row;
 }
 
-function toggleDonationEditor(wrap, d, body, profile, loadDonations, invalidateDonations) {
-  const existing = wrap.querySelector(".donation-editor");
+function toggleDonationEditor(row, d, body, profile, loadDonations, invalidateDonations) {
+  const existing = row.querySelector(".donation-editor");
   if (existing) { existing.remove(); return; }
   const editor = h("div", { class: "donation-editor stack", style: "margin-top:10px;width:100%" });
   const dateField = h("input", { type: "date", max: todayIsoDate() });
@@ -690,7 +688,7 @@ function toggleDonationEditor(wrap, d, body, profile, loadDonations, invalidateD
       renderDonationsTab(body, profile, loadDonations, invalidateDonations);
     } catch (e) { toast(e.message); }
   };
-  wrap.appendChild(editor);
+  row.appendChild(editor);
 }
 
 // Profile tab's own "calls" section - RECEIVED calls only, last 5, with
@@ -787,12 +785,18 @@ const CALL_STATUS_OPTIONS = [
   { key: "not_picked_up", label: "কল ধরেনি" },
   { key: "cannot_donate", label: "রক্ত দিতে পারবে না" },
   { key: "can_donate", label: "রক্ত দিতে পারবে" },
+  { key: "not_called", label: "কল করিনি" },
 ];
 const CALL_CANNOT_REASONS = [
   { key: "not_yet_eligible", label: "রক্ত দেওয়ার সময় হয়নি" },
   { key: "far_away", label: "দূরে আছেন" },
   { key: "busy_today", label: "আজকে ব্যস্ত" },
   { key: "no_reason_given", label: "কারণ জানান নি" },
+];
+const CALL_NOT_CALLED_REASONS = [
+  { key: "note_reason", label: "নোটের কারণে" },
+  { key: "blood_not_needed", label: "রক্ত প্রয়োজন নেই" },
+  { key: "other", label: "অন্যান্য" },
 ];
 
 function renderInlineStatusUpdate(row, c, body) {
@@ -805,12 +809,38 @@ function renderInlineStatusUpdate(row, c, body) {
   row.appendChild(wrap);
 }
 
+// "কল করিনি" sub-question - three fixed reasons (all submitted
+// immediately, "অন্যান্য" included) plus a separate "কাষ্টম ব্যখ্যা" button
+// that reveals a free-text field (up to 30 chars) - same pattern as the
+// seek-flow card.
+function renderInlineNotCalledReasons(wrap, c, body) {
+  wrap.innerHTML = "";
+  CALL_NOT_CALLED_REASONS.forEach((r) => {
+    wrap.appendChild(h("button", { class: "btn btn-outline btn-sm", onclick: () => submitInlineStatus(wrap, c, "not_called", r.key, body) }, r.label));
+  });
+
+  const customField = h("input", { type: "text", maxlength: "30", placeholder: "নিজে লিখুন (সর্বোচ্চ ৩০ অক্ষর)", style: "display:none;margin-top:6px" });
+  const submitCustomBtn = h("button", { class: "btn btn-primary btn-sm", style: "display:none;margin-top:6px", onclick: () => {
+    const text = customField.value.trim();
+    if (!text) { toast("লিখুন"); return; }
+    submitInlineStatus(wrap, c, "not_called", text, body);
+  } }, "সাবমিট করুন");
+  customField.oninput = () => { submitCustomBtn.style.display = customField.value.trim() ? "block" : "none"; };
+  wrap.appendChild(h("button", { class: "btn btn-outline btn-sm", onclick: () => { customField.style.display = "block"; customField.focus(); } }, "কাষ্টম ব্যখ্যা"));
+  wrap.appendChild(customField);
+  wrap.appendChild(submitCustomBtn);
+}
+
 async function submitInlineStatus(wrap, c, status, cannotReason, body) {
   if (status === "cannot_donate" && !cannotReason) {
     wrap.innerHTML = "";
     CALL_CANNOT_REASONS.forEach((r) => {
       wrap.appendChild(h("button", { class: "btn btn-outline btn-sm", onclick: () => submitInlineStatus(wrap, c, status, r.key, body) }, r.label));
     });
+    return;
+  }
+  if (status === "not_called" && !cannotReason) {
+    renderInlineNotCalledReasons(wrap, c, body);
     return;
   }
   try {

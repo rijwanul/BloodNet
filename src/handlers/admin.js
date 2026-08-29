@@ -315,6 +315,7 @@ export async function handleSmsSettingsGet(request, env) {
     sms_password_reset_by_admin: settings.sms_password_reset_by_admin,
     sms_eligibility_change_by_call: settings.sms_eligibility_change_by_call,
     sms_donation_reminder: settings.sms_donation_reminder,
+    sms_eligibility_reopened: settings.sms_eligibility_reopened,
     otp_test_mode: settings.otp_test_mode === "1",
     manual_otp: settings.manual_otp,
     greensms_api_key: settings.greensms_api_key,
@@ -324,6 +325,7 @@ export async function handleSmsSettingsGet(request, env) {
     sms_enabled_password_reset: settings.sms_enabled_password_reset !== "0",
     sms_enabled_eligibility_change_by_call: settings.sms_enabled_eligibility_change_by_call !== "0",
     sms_enabled_donation_reminder: settings.sms_enabled_donation_reminder !== "0",
+    sms_enabled_eligibility_reopened: settings.sms_enabled_eligibility_reopened !== "0",
     sms_daily_limit_user_initiated: settings.sms_daily_limit_user_initiated || "3",
     sms_daily_limit_system: settings.sms_daily_limit_system || "3",
     sms_over_limit_otp_message: settings.sms_over_limit_otp_message || "আপনার দৈনিক এসএমএস লিমিট শেষ হয়েছে। 01883-600680 নাম্বারে কল করুন",
@@ -334,11 +336,11 @@ export async function handleSmsSettingsUpdate(request, env) {
   const { user: admin, resp } = await requirePerm(request, env, "manage_sms_settings");
   if (resp) return resp;
   const body = await readJson(request);
-  const allowed = ["sms_account_created_self", "sms_account_created_import", "sms_otp", "sms_password_reset_by_admin", "sms_eligibility_change_by_call", "sms_donation_reminder", "manual_otp", "greensms_api_key", "sms_over_limit_otp_message"];
+  const allowed = ["sms_account_created_self", "sms_account_created_import", "sms_otp", "sms_password_reset_by_admin", "sms_eligibility_change_by_call", "sms_donation_reminder", "sms_eligibility_reopened", "manual_otp", "greensms_api_key", "sms_over_limit_otp_message"];
   const patch = {};
   for (const k of allowed) if (typeof body[k] === "string") patch[k] = body[k];
   if (body.otp_test_mode !== undefined) patch.otp_test_mode = body.otp_test_mode ? "1" : "0";
-  for (const k of ["sms_enabled_account_created_self", "sms_enabled_account_created_import", "sms_enabled_otp", "sms_enabled_password_reset", "sms_enabled_eligibility_change_by_call", "sms_enabled_donation_reminder"]) {
+  for (const k of ["sms_enabled_account_created_self", "sms_enabled_account_created_import", "sms_enabled_otp", "sms_enabled_password_reset", "sms_enabled_eligibility_change_by_call", "sms_enabled_donation_reminder", "sms_enabled_eligibility_reopened"]) {
     if (body[k] !== undefined) patch[k] = body[k] ? "1" : "0";
   }
   if (body.sms_daily_limit_user_initiated !== undefined) patch.sms_daily_limit_user_initiated = String(Math.max(0, parseInt(body.sms_daily_limit_user_initiated, 10) || 0));
@@ -348,7 +350,7 @@ export async function handleSmsSettingsUpdate(request, env) {
   return ok({ updated: true });
 }
 
-const SMS_TEMPLATE_KEYS = ["sms_account_created_self", "sms_account_created_import", "sms_otp", "sms_password_reset_by_admin", "sms_eligibility_change_by_call", "sms_donation_reminder"];
+const SMS_TEMPLATE_KEYS = ["sms_account_created_self", "sms_account_created_import", "sms_otp", "sms_password_reset_by_admin", "sms_eligibility_change_by_call", "sms_donation_reminder", "sms_eligibility_reopened"];
 
 export async function handleSmsTest(request, env) {
   const { user: admin, resp } = await requirePerm(request, env, "manage_sms_settings");
@@ -486,6 +488,8 @@ export async function handleSiteSettingsGet(request, env) {
     welcome_subheading: settings.welcome_subheading,
     welcome_small_text: settings.welcome_small_text,
     eligibility_wait_months: settings.eligibility_wait_months,
+    eligibility_reopen_delay_days: settings.eligibility_reopen_delay_days || "15",
+    eligibility_reopen_repeat_days: settings.eligibility_reopen_repeat_days || "15",
     self_deletion_enabled: settings.self_deletion_enabled === "1",
     session_days: settings.session_days || "90",
     show_seek_option: settings.show_seek_option !== "0",
@@ -493,6 +497,7 @@ export async function handleSiteSettingsGet(request, env) {
     show_logout_button: settings.show_logout_button === "1",
     profile_share_base_url: settings.profile_share_base_url || "",
     default_avatars_json: settings.default_avatars_json || "[]",
+    whatsapp_seek_message: settings.whatsapp_seek_message || "আসসালামুআলাইকুম। আশা করি ভালো আছেন। {bloodGroup} রক্তদাতা খুঁজছিলাম। আপনি কি এভেইলেবল আছেন?",
     // moved here from Site APIs - these govern the /seek system, not third-party credentials
     otp_required_for_number_change: settings.otp_required_for_number_change !== "0",
     call_limit_count: settings.call_limit_count,
@@ -509,10 +514,12 @@ export async function handleSiteSettingsUpdate(request, env) {
   if (resp) return resp;
   const body = await readJson(request);
   const patch = {};
-  for (const k of ["site_title", "logo_url", "favicon_url", "social_preview_url", "theme_color", "welcome_heading", "welcome_subheading", "welcome_small_text", "profile_share_base_url", "default_avatars_json", "reserved_usernames"]) {
+  for (const k of ["site_title", "logo_url", "favicon_url", "social_preview_url", "theme_color", "welcome_heading", "welcome_subheading", "welcome_small_text", "profile_share_base_url", "default_avatars_json", "reserved_usernames", "whatsapp_seek_message"]) {
     if (typeof body[k] === "string") patch[k] = body[k];
   }
   if (body.eligibility_wait_months !== undefined) patch.eligibility_wait_months = String(parseInt(body.eligibility_wait_months, 10) || 0);
+  if (body.eligibility_reopen_delay_days !== undefined) patch.eligibility_reopen_delay_days = String(Math.max(0, parseInt(body.eligibility_reopen_delay_days, 10) || 0));
+  if (body.eligibility_reopen_repeat_days !== undefined) patch.eligibility_reopen_repeat_days = String(Math.max(0, parseInt(body.eligibility_reopen_repeat_days, 10) || 0));
   if (body.self_deletion_enabled !== undefined) patch.self_deletion_enabled = body.self_deletion_enabled ? "1" : "0";
   if (body.session_days !== undefined) patch.session_days = String(Math.max(1, parseInt(body.session_days, 10) || 90));
   if (body.show_seek_option !== undefined) patch.show_seek_option = body.show_seek_option ? "1" : "0";
@@ -555,6 +562,7 @@ export async function handlePublicSettings(request, env) {
     otpRequiredForNumberChange: settings.otp_required_for_number_change !== "0",
     profileShareBaseUrl: settings.profile_share_base_url || "",
     defaultAvatars: safeParseJson(settings.default_avatars_json, []),
+    whatsappSeekMessage: settings.whatsapp_seek_message || "আসসালামুআলাইকুম। আশা করি ভালো আছেন। {bloodGroup} রক্তদাতা খুঁজছিলাম। আপনি কি এভেইলেবল আছেন?",
   });
 }
 

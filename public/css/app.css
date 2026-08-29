@@ -65,7 +65,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
      the sidebar's collapsed/expanded width. */
   .topbar { position: fixed; top: 0; left: 0; right: 0; z-index: 21; }
 }
-.topbar__logo { display: flex; align-items: center; gap: 8px; font-family: var(--font-bn); font-weight: 700; font-size: 1.15rem; color: var(--primary); }
+.topbar__logo { display: flex; align-items: center; gap: 8px; font-family: var(--font-bn); font-weight: 700; font-size: 1.15rem; color: var(--primary-dark); }
 .topbar__logo img { height: 28px; width: 28px; border-radius: 7px; object-fit: cover; }
 .topbar__spacer { flex: 1; }
 .topbar__link { font-size: 0.92rem; font-weight: 600; color: var(--ink-soft); padding: 8px 10px; border-radius: 999px; }
@@ -87,6 +87,24 @@ main { flex: 1; padding: 20px 18px 8px; }
 .muted { color: var(--ink-soft); font-size: 0.92rem; }
 .small { font-size: 0.85rem; }
 .eyebrow { font-family: var(--font-ui); font-size: 0.72rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--primary); font-weight: 700; margin-bottom: 6px; display: block; }
+
+/* ---------- admin help doc ---------- */
+/* Each admin nav section is a native <details> accordion re-using .card's
+   look - summary is the clickable header (question mark cursor removed by
+   overriding the default marker with a chevron-esque ::marker), the Q/A
+   pairs inside use a slightly indented, lightly bordered block so multiple
+   items in one open section stay visually separated without needing extra
+   nested cards. */
+.help-doc-section { cursor: default; }
+.help-doc-section__title { cursor: pointer; display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 1rem; color: var(--ink); list-style: none; }
+.help-doc-section__title::-webkit-details-marker { display: none; }
+.help-doc-section__title::marker { content: ""; }
+.help-doc-section__title::after { content: "+"; margin-left: auto; font-size: 1.2rem; color: var(--ink-soft); }
+.help-doc-section[open] .help-doc-section__title::after { content: "−"; }
+.help-doc-item { margin-top: 14px; padding: 12px 14px; background: var(--surface-2); border-radius: calc(var(--radius) - 6px); }
+.help-doc-item__q { font-weight: 600; color: var(--primary-dark); margin-bottom: 6px; }
+.help-doc-item__a { font-size: 0.92rem; color: var(--ink); line-height: 1.6; }
+.help-doc-item__a b { color: var(--ink); }
 
 /* ---------- buttons ---------- */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 13px 20px; border-radius: 999px; border: 1.5px solid transparent; font-weight: 600; font-size: 0.98rem; cursor: pointer; width: 100%; transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease; }
@@ -189,15 +207,6 @@ textarea { resize: vertical; min-height: 80px; }
    rather than the default left/right single-line layout. */
 .list-item--stacked { display: block; }
 .list-item--stacked > div:first-child { margin-bottom: 2px; }
-/* Donation entries: row + its (optional) inline editor stacked below it,
-   as a single unit so the editor never competes for horizontal space
-   inside the flex row above it. .list-item is no longer a direct child of
-   .card here, so the border/last-child spacing is moved up to this
-   wrapper instead, and the inner .list-item's own border is suppressed. */
-.donation-list-item-wrap { border-bottom: 1px solid var(--line); }
-.donation-list-item-wrap:last-child { border-bottom: none; }
-.donation-list-item-wrap .list-item { border-bottom: none; padding-bottom: 0; }
-.donation-list-item-wrap .donation-editor { padding-bottom: 12px; }
 /* Public profile tab strip (tab view) */
 .profile-tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--line); padding-bottom: 0; }
 .profile-tabs__btn { border: none; background: transparent; padding: 10px 14px; font-size: 0.88rem; font-weight: 600; color: var(--ink-soft); cursor: pointer; white-space: nowrap; border-bottom: 2px solid transparent; }

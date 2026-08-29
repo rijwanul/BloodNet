@@ -117,6 +117,10 @@ export async function handleProfileEdit(request, env) {
   if (typeof body.lastDonationDate === "string") {
     fields.push("last_donation_date = ?");
     values.push(body.lastDonationDate || null);
+    // A changed donation date restarts the wait-period clock, so the
+    // reopen-reminder SMS should be able to fire again for the new cycle
+    // rather than staying suppressed by its repeat window from before.
+    fields.push("eligibility_reopen_note_sent_at = NULL");
   }
   if (typeof body.addressSummary === "string") {
     fields.push("address_summary = ?");
@@ -340,7 +344,7 @@ export async function handleDonationsAdd(request, env) {
       .bind(user.id, hospitalName, date, nowIso())
       .run();
     await env.DB
-      .prepare("UPDATE users SET last_donation_date = ?, updated_at = ? WHERE id = ? AND (last_donation_date IS NULL OR last_donation_date < ?)")
+      .prepare("UPDATE users SET last_donation_date = ?, eligibility_reopen_note_sent_at = NULL, updated_at = ? WHERE id = ? AND (last_donation_date IS NULL OR last_donation_date < ?)")
       .bind(date, nowIso(), user.id, date)
       .run();
     await logActivity(env.DB, { actorUser: user, category: "donation", actionText: `পূর্বের রক্তদানের তথ্য যোগ করেছেন (${date})` });

@@ -59,7 +59,7 @@ export async function handleDonorEligibility(request, env) {
 
   if (action === "on") {
     await env.DB
-      .prepare("UPDATE users SET eligibility_status = 'on', eligibility_snooze_until = NULL, eligibility_snooze_reason = NULL, pending_donation_prompt = 0, updated_at = ? WHERE id = ?")
+      .prepare("UPDATE users SET eligibility_status = 'on', eligibility_snooze_until = NULL, eligibility_snooze_reason = NULL, pending_donation_prompt = 0, eligibility_off_since = NULL, eligibility_reopen_note_sent_at = NULL, updated_at = ? WHERE id = ?")
       .bind(nowIso(), user.id)
       .run();
     await logActivity(env.DB, { actorUser: user, category: "settings", actionText: "নিজের এলিজিবিলিটি চালু করেছেন" });
@@ -97,11 +97,15 @@ export async function handleDonorEligibility(request, env) {
         .bind(snoozeUntil, reasonLabel, nowIso(), user.id)
         .run();
     } else {
-      // 'যতদিন আমি নিজে চালু না করি' - indefinite, no auto wake
+      // 'যতদিন আমি নিজে চালু না করি' - indefinite, no auto wake.
+      // eligibility_off_since stamps the moment of this deliberate choice
+      // (only here, not for handleDonorModeOff above, since that's
+      // is_donor=0 which the reopen-reminder sweep already excludes) - the
+      // reopen-reminder's delay-before-first-send is measured from this.
       reasonLabel = "যতদিন না নিজে চালু করেন";
       await env.DB
-        .prepare("UPDATE users SET eligibility_status = 'off', eligibility_snooze_until = NULL, eligibility_snooze_reason = ?, updated_at = ? WHERE id = ?")
-        .bind(reasonLabel, nowIso(), user.id)
+        .prepare("UPDATE users SET eligibility_status = 'off', eligibility_snooze_until = NULL, eligibility_snooze_reason = ?, eligibility_off_since = ?, eligibility_reopen_note_sent_at = NULL, updated_at = ? WHERE id = ?")
+        .bind(reasonLabel, nowIso(), nowIso(), user.id)
         .run();
     }
     await logActivity(env.DB, { actorUser: user, category: "settings", actionText: `নিজের এলিজিবিলিটি বন্ধ/স্থগিত করেছেন (${reasonLabel})` });
