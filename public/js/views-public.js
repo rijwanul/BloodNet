@@ -320,7 +320,7 @@ function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
     // BD mobiles are stored as 11 digits starting with 0 (e.g.
     // 01383600577) - wa.me needs the full international number with the
     // country code and no leading zero (8801383600577).
-    const intlNumber = "88" + realMobile.replace(/^0/, "");
+    const intlNumber = "880" + realMobile.replace(/^0/, "");
     const template = (APP.settings && APP.settings.whatsappSeekMessage) ||
       "আসসালামুআলাইকুম। আশা করি ভালো আছেন। {bloodGroup} রক্তদাতা খুঁজছিলাম। আপনি কি এভেইলেবল আছেন?";
     const message = template.replace(/\{bloodGroup\}/g, bloodGroup);

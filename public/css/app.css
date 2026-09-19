@@ -81,6 +81,12 @@ main { flex: 1; padding: 20px 18px 8px; }
 /* ---------- cards & layout ---------- */
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
 .card--flat { box-shadow: none; }
+
+/* Clickable list rows (e.g. মাল্টিসাইট ব্র্যান্ডিং domain list) - a plain
+   .card with a click handler needs a visible affordance, since the
+   default .card has no hover/interactive styling on its own. */
+.card--clickable { cursor: pointer; }
+.card--clickable:hover { border-color: var(--primary); box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 .row { display: flex; align-items: center; gap: 10px; }
 .center { text-align: center; }

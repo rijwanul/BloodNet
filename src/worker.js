@@ -5,6 +5,8 @@ import * as donor from "./handlers/donor.js";
 import * as profile from "./handlers/profile.js";
 import * as calls from "./handlers/calls.js";
 import * as admin from "./handlers/admin.js";
+import { getBrandForHostname } from "./handlers/admin.js";
+import { getSettings } from "./lib/settings.js";
 import { runDonationReminderSweep, runActivityLogAutoPurge, runSmsDailyReset, runEligibilityReopenSweep, runEligibilitySnoozeWakeSweep } from "./lib/scheduled.js";
 
 export default {
@@ -17,12 +19,26 @@ export default {
         return await routeApi(request, env, path);
       }
 
-      // Static assets (css/js/img/etc). Falls through to the SPA shell for
-      // any path that isn't a real file - client-side router then decides
-      // whether it's a known app route or a /username public profile.
+      // Static assets (css/js/img/etc) are served as-is. HTML documents -
+      // whether the asset binding matches "/" directly, or falls through to
+      // the SPA shell for an unknown path (client-side router then decides
+      // if it's a known app route or a /username public profile) - always
+      // get run through applyServerSideBranding so the <title>/favicon
+      // reflect the CURRENT site settings (or a matching multisite brand)
+      // instead of the hardcoded defaults baked into the static index.html
+      // file. Previously this only happened on the SPA-fallback path, which
+      // with not_found_handling = "single-page-application" essentially
+      // never fires for a normal "/" load - assetResp already resolves
+      // index.html directly and was returned unmodified, which is why the
+      // static "BloodNet v2" title/favicon would flash regardless of what
+      // was set in site settings.
       const assetResp = await env.ASSETS.fetch(request);
-      if (assetResp.status !== 404) return assetResp;
-      return env.ASSETS.fetch(new Request(new URL("/index.html", request.url), request));
+      const isHtml = (assetResp.headers.get("content-type") || "").includes("text/html");
+      if (assetResp.status !== 404) {
+        return isHtml ? await applyServerSideBranding(assetResp, env, url.hostname) : assetResp;
+      }
+      const shellResp = await env.ASSETS.fetch(new Request(new URL("/index.html", request.url), request));
+      return await applyServerSideBranding(shellResp, env, url.hostname);
     } catch (e) {
       return err(`সার্ভার সমস্যা: ${String(e && e.message ? e.message : e)}`, 500);
     }
@@ -40,6 +56,48 @@ export default {
     ctx.waitUntil(runEligibilitySnoozeWakeSweep(env));
   },
 };
+
+// Rewrites <title> and the favicon <link> directly in the served
+// index.html shell for the requesting hostname, using HTMLRewriter (native
+// to Workers, no extra dependency). This exists ALONGSIDE the client-side
+// applyBranding() in app.js (which reads /api/settings/public after boot)
+// rather than replacing it - the client-side version is still what updates
+// branding on soft (in-app) navigation without a full page reload, and
+// stays the source of truth for the theme color / logo image in the
+// topbar. This server-side pass fixes the "flash of default title/favicon"
+// on a hard page load - it ALWAYS applies the site-wide site_title/
+// favicon_url from settings (regardless of whether multisite branding is
+// on), and additionally applies a per-domain override on top when
+// multisite branding is on and the hostname matches an entry. Falls back
+// to leaving the static HTML untouched only if settings.site_title AND
+// settings.favicon_url are both genuinely empty, or on any lookup error -
+// never breaks page load over a branding lookup failure.
+async function applyServerSideBranding(shellResp, env, hostname) {
+  try {
+    const settings = await getSettings(env.DB);
+    const brand = await getBrandForHostname(env, hostname);
+    const title = (brand && brand.site_title) || settings.site_title;
+    const faviconUrl = (brand && brand.favicon_url) || settings.favicon_url;
+    if (!title && !faviconUrl) return shellResp;
+
+    const rewriter = new HTMLRewriter();
+    if (title) {
+      rewriter.on("title", {
+        element(element) { element.setInnerContent(title); },
+      });
+    }
+    if (faviconUrl) {
+      rewriter.on("#faviconLink", {
+        element(element) { element.setAttribute("href", faviconUrl); },
+      });
+    }
+    return rewriter.transform(shellResp);
+  } catch {
+    return shellResp;
+  }
+}
+
+
 
 async function routeApi(request, env, path) {
   const method = request.method;
@@ -136,6 +194,12 @@ async function routeApi(request, env, path) {
   if (path === "/api/admin/sms-analytics/reset" && method === "POST") return admin.handleSmsAnalyticsReset(request, env);
   if (path === "/api/admin/sms-limit-override" && method === "POST") return admin.handleSmsLimitOverride(request, env);
   if (path === "/api/admin/claim-unregistered-donorbd-slugs" && method === "POST") return admin.handleClaimUnregisteredDonorbdSlugs(request, env);
+
+  if (path === "/api/admin/multisite-branding" && method === "GET") return admin.handleMultisiteGet(request, env);
+  if (path === "/api/admin/multisite-branding/toggle" && method === "POST") return admin.handleMultisiteToggle(request, env);
+  if (path === "/api/admin/multisite-branding" && method === "POST") return admin.handleMultisiteCreate(request, env);
+  if (seg[2] === "multisite-branding" && seg[3] && method === "PUT") return admin.handleMultisiteUpdate(request, env, seg[3]);
+  if (seg[2] === "multisite-branding" && seg[3] && method === "DELETE") return admin.handleMultisiteDelete(request, env, seg[3]);
 
   // Public locations list is also used outside admin (signup forms etc.)
   if (path === "/api/locations" && method === "GET") return admin.handleLocationsList(request, env);

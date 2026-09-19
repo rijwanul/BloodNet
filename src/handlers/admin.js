@@ -539,12 +539,34 @@ export async function handleSiteSettingsUpdate(request, env) {
 }
 
 // -------------------------------------------------------- PUBLIC SETTINGS
+// Looks up a per-domain branding override (see মাল্টিসাইট ব্র্যান্ডিং section
+// below) for the given hostname, if the feature is turned on and a row
+// matches. Returns null when multisite branding is off or no domain
+// matches, in which case callers should fall back to the site-wide
+// site_title/logo_url/favicon_url settings as before. Exported so
+// worker.js can reuse the exact same lookup when server-side rendering
+// the <title>/favicon into index.html via HTMLRewriter (see worker.js).
+export async function getBrandForHostname(env, hostname) {
+  if (!hostname) return null;
+  const settings = await getSettings(env.DB);
+  if (settings.multisite_branding_enabled !== "1") return null;
+  const domain = String(hostname).toLowerCase();
+  const row = await env.DB.prepare("SELECT site_title, logo_url, favicon_url FROM multisite_brands WHERE domain = ?").bind(domain).first();
+  return row || null;
+}
+
 export async function handlePublicSettings(request, env) {
   const settings = await getSettings(env.DB);
+  const hostname = new URL(request.url).hostname;
+  const brand = await getBrandForHostname(env, hostname);
   return ok({
-    siteTitle: settings.site_title,
-    logoUrl: settings.logo_url,
-    faviconUrl: settings.favicon_url,
+    // A brand row's field can itself be blank (admin left it empty to
+    // intentionally fall back to the site default for just that one
+    // field) - so each override only applies when it's a non-empty string,
+    // not merely when the brand row exists.
+    siteTitle: (brand && brand.site_title) || settings.site_title,
+    logoUrl: (brand && brand.logo_url) || settings.logo_url,
+    faviconUrl: (brand && brand.favicon_url) || settings.favicon_url,
     socialPreviewUrl: settings.social_preview_url,
     themeColor: settings.theme_color,
     welcomeHeading: settings.welcome_heading,
@@ -568,6 +590,71 @@ export async function handlePublicSettings(request, env) {
 
 function safeParseJson(str, fallback) {
   try { return JSON.parse(str || "null") ?? fallback; } catch { return fallback; }
+}
+
+// ------------------------------------------------------ MULTISITE BRANDING
+// (মাল্টিসাইট ব্র্যান্ডিং) - per-domain override list. Gated behind the same
+// manage_site_settings permission as the rest of site branding, since this
+// is conceptually an extension of it (multiple sets of title/logo/favicon
+// instead of one).
+export async function handleMultisiteGet(request, env) {
+  const { resp } = await requirePerm(request, env, "manage_site_settings");
+  if (resp) return resp;
+  const settings = await getSettings(env.DB);
+  const { results } = await env.DB.prepare("SELECT * FROM multisite_brands ORDER BY sort_order ASC, id ASC").all();
+  return ok({ enabled: settings.multisite_branding_enabled === "1", brands: results });
+}
+
+export async function handleMultisiteToggle(request, env) {
+  const { user: admin, resp } = await requirePerm(request, env, "manage_site_settings");
+  if (resp) return resp;
+  const body = await readJson(request);
+  await setSettings(env.DB, { multisite_branding_enabled: body.enabled ? "1" : "0" });
+  await logActivity(env.DB, { actorUser: admin, category: "settings", actionText: `মাল্টিসাইট ব্র্যান্ডিং ${body.enabled ? "চালু" : "বন্ধ"} করেছেন` });
+  return ok({ updated: true });
+}
+
+function normalizeDomain(raw) {
+  return String(raw || "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+}
+
+export async function handleMultisiteCreate(request, env) {
+  const { user: admin, resp } = await requirePerm(request, env, "manage_site_settings");
+  if (resp) return resp;
+  const body = await readJson(request);
+  const domain = normalizeDomain(body.domain);
+  if (!domain) return err("ডোমেইন দিন");
+  const existing = await env.DB.prepare("SELECT id FROM multisite_brands WHERE domain = ?").bind(domain).first();
+  if (existing) return err("এই ডোমেইনটি ইতিমধ্যে তালিকায় আছে");
+  await env.DB.prepare("INSERT INTO multisite_brands (domain, site_title, logo_url, favicon_url, sort_order) VALUES (?, ?, ?, ?, ?)")
+    .bind(domain, body.siteTitle || "", body.logoUrl || "", body.faviconUrl || "", parseInt(body.sortOrder, 10) || 0)
+    .run();
+  await logActivity(env.DB, { actorUser: admin, category: "settings", actionText: `মাল্টিসাইট ব্র্যান্ডিং এন্ট্রি যোগ করেছেন (${domain})` });
+  return ok({ created: true });
+}
+
+export async function handleMultisiteUpdate(request, env, id) {
+  const { user: admin, resp } = await requirePerm(request, env, "manage_site_settings");
+  if (resp) return resp;
+  const body = await readJson(request);
+  const domain = normalizeDomain(body.domain);
+  if (!domain) return err("ডোমেইন দিন");
+  const existing = await env.DB.prepare("SELECT id FROM multisite_brands WHERE domain = ? AND id != ?").bind(domain, id).first();
+  if (existing) return err("এই ডোমেইনটি ইতিমধ্যে অন্য একটি এন্ট্রিতে আছে");
+  await env.DB.prepare("UPDATE multisite_brands SET domain = ?, site_title = ?, logo_url = ?, favicon_url = ?, sort_order = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(domain, body.siteTitle || "", body.logoUrl || "", body.faviconUrl || "", parseInt(body.sortOrder, 10) || 0, id)
+    .run();
+  await logActivity(env.DB, { actorUser: admin, category: "settings", actionText: `মাল্টিসাইট ব্র্যান্ডিং এন্ট্রি আপডেট করেছেন (${domain})` });
+  return ok({ updated: true });
+}
+
+export async function handleMultisiteDelete(request, env, id) {
+  const { user: admin, resp } = await requirePerm(request, env, "manage_site_settings");
+  if (resp) return resp;
+  const row = await env.DB.prepare("SELECT domain FROM multisite_brands WHERE id = ?").bind(id).first();
+  await env.DB.prepare("DELETE FROM multisite_brands WHERE id = ?").bind(id).run();
+  await logActivity(env.DB, { actorUser: admin, category: "settings", actionText: `মাল্টিসাইট ব্র্যান্ডিং এন্ট্রি ডিলিট করেছেন (${row ? row.domain : id})` });
+  return ok({ deleted: true });
 }
 
 // ------------------------------------------------------------ PERMISSIONS

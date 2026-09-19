@@ -9,6 +9,7 @@ const ADMIN_NAV_ITEMS = [
   ["/admin/sms-analytics", "bar-chart-3", "এসএমএস এনালিটিক্স"],
   ["/admin/site-apis", "key", "সাইট এপিআই"],
   ["/admin/site-settings", "settings-2", "সাইট সেটিংস"],
+  ["/admin/multisite-branding", "globe", "মাল্টিসাইট ব্র্যান্ডিং"],
   ["/admin/locations", "map-pin", "লোকেশন"],
   ["/admin/help", "help-circle", "সহায়িকা"],
 ];
@@ -927,7 +928,117 @@ ViewsAdmin.siteSettings = async function (view) {
   };
 };
 
-// ----------------------------------------------------------------- LOCATIONS
+// ----------------------------------------------------- MULTISITE BRANDING
+// (মাল্টিসাইট ব্র্যান্ডিং) - lets the admin show a different site title,
+// favicon and logo depending on which domain/subdomain a visitor is on
+// (e.g. dhaka.example.com vs chittagong.example.com vs the bare default
+// domain). OFF by default (existing single-brand behavior unchanged) -
+// the master switch at the top must be turned on before any per-domain
+// entry actually takes effect (see getBrandForHostname in admin.js /
+// handlePublicSettings). The list here intentionally shows ONLY the
+// domain name per row - tapping a row opens a popup (openModal) with the
+// editable title/logo/favicon fields, rather than expanding inline, per
+// spec ("শুধু ডোমেইনের তালিকা... ক্লিক করলে পপআপ").
+ViewsAdmin.multisiteBranding = async function (view) {
+  const content = adminPage(view, "মাল্টিসাইট ব্র্যান্ডিং", "/admin/multisite-branding");
+
+  const introCard = h("div", { class: "card" });
+  introCard.appendChild(h("p", { class: "muted" }, "একই সাইট ভিন্ন ভিন্ন ডোমেইন/সাবডোমেইনে ভিন্ন সাইট টাইটেল, ফেভিকন ও লোগো দিয়ে দেখানোর জন্য। বন্ধ থাকলে সব ডোমেইনে সাইট সেটিংস পেইজের ডিফল্ট টাইটেল/লোগো/ফেভিকন দেখানো হবে।"));
+  const toggleRow = h("div", { class: "toggle-row" });
+  const enabledCb = h("input", { type: "checkbox" });
+  toggleRow.appendChild(h("div", {}, [h("b", {}, "মাল্টিসাইট ব্র্যান্ডিং চালু করুন"), h("div", { class: "small muted" }, "বন্ধ থাকলে নিচের তালিকা সংরক্ষিত থাকবে কিন্তু কার্যকর হবে না")]));
+  const sw = h("label", { class: "switch" }); sw.appendChild(enabledCb); sw.appendChild(h("span", { class: "track" }));
+  toggleRow.appendChild(sw);
+  introCard.appendChild(toggleRow);
+  content.appendChild(introCard);
+
+  const listArea = h("div");
+  content.appendChild(listArea);
+
+  const addBtn = h("button", { class: "btn btn-primary", style: "margin-top:12px" }, [icon("plus", "small"), " নতুন ডোমেইন যোগ করুন"]);
+  content.appendChild(addBtn);
+
+  async function load() {
+    const { enabled, brands } = await API.get("/api/admin/multisite-branding");
+    enabledCb.checked = enabled;
+    enabledCb.onchange = async () => {
+      const newValue = enabledCb.checked;
+      enabledCb.disabled = true;
+      try { await API.post("/api/admin/multisite-branding/toggle", { enabled: newValue }); }
+      catch (e) { enabledCb.checked = !newValue; toast(e.message); }
+      finally { enabledCb.disabled = false; }
+    };
+
+    listArea.innerHTML = "";
+    if (!brands.length) {
+      listArea.appendChild(h("div", { class: "card center muted" }, "এখনো কোনো ডোমেইন যোগ করা হয়নি।"));
+      return;
+    }
+    brands.forEach((b) => {
+      const row = h("div", { class: "card card--clickable row", style: "justify-content:space-between;align-items:center" });
+      row.appendChild(h("div", {}, [
+        h("b", {}, b.domain),
+        h("div", { class: "small muted" }, b.site_title || "(ডিফল্ট টাইটেল ব্যবহৃত হবে)"),
+      ]));
+      row.appendChild(icon("chevron-right", "small"));
+      row.onclick = () => openBrandModal(b);
+      listArea.appendChild(row);
+    });
+  }
+
+  function openBrandModal(existing) {
+    const isNew = !existing;
+    const domainF = h("input", { type: "text", placeholder: "যেমনঃ dhaka.example.com" });
+    domainF.value = existing ? existing.domain : "";
+    const titleF = h("input", { type: "text", placeholder: "খালি রাখলে ডিফল্ট সাইট টাইটেল ব্যবহৃত হবে" });
+    titleF.value = existing ? (existing.site_title || "") : "";
+    const logoF = h("input", { type: "text", placeholder: "খালি রাখলে ডিফল্ট লোগো ব্যবহৃত হবে (URL)" });
+    logoF.value = existing ? (existing.logo_url || "") : "";
+    const faviconF = h("input", { type: "text", placeholder: "খালি রাখলে ডিফল্ট ফেভিকন ব্যবহৃত হবে (URL)" });
+    faviconF.value = existing ? (existing.favicon_url || "") : "";
+
+    const body = h("div", { class: "stack" }, [
+      h("div", { class: "field" }, [h("label", {}, "ডোমেইন / সাবডোমেইন"), domainF, h("div", { class: "field-hint" }, "ঠিক যেভাবে ব্রাউজারের URL বারে দেখা যায় (http:// ছাড়া) - যেমনঃ dhaka.example.com")]),
+      h("div", { class: "field" }, [h("label", {}, "সাইট টাইটেল"), titleF]),
+      h("div", { class: "field" }, [h("label", {}, "লোগো URL"), logoF]),
+      h("div", { class: "field" }, [h("label", {}, "ফেভিকন URL"), faviconF]),
+    ]);
+
+    const saveBtn = h("button", { class: "btn btn-primary" }, "সংরক্ষণ");
+    const actions = [h("button", { class: "btn btn-outline", onclick: closeModal }, "বাতিল")];
+    if (!isNew) {
+      actions.push(h("button", {
+        class: "btn btn-danger",
+        onclick: async () => {
+          const sure = await confirmModal(`"${existing.domain}" ডিলিট করবেন?`);
+          if (!sure) return;
+          try { await API.del(`/api/admin/multisite-branding/${existing.id}`); closeModal(); toast("ডিলিট হয়েছে"); load(); }
+          catch (e) { toast(e.message); }
+        },
+      }, "ডিলিট"));
+    }
+    actions.push(saveBtn);
+
+    saveBtn.onclick = async () => {
+      if (!domainF.value.trim()) { toast("ডোমেইন দিন"); return; }
+      const payload = { domain: domainF.value, siteTitle: titleF.value, logoUrl: logoF.value, faviconUrl: faviconF.value };
+      try {
+        if (isNew) await API.post("/api/admin/multisite-branding", payload);
+        else await API.put(`/api/admin/multisite-branding/${existing.id}`, payload);
+        closeModal();
+        toast("সংরক্ষণ হয়েছে");
+        load();
+      } catch (e) { toast(e.message); }
+    };
+
+    openModal({ title: isNew ? "নতুন ডোমেইন" : existing.domain, body, actions });
+  }
+
+  addBtn.onclick = () => openBrandModal(null);
+
+  await load();
+};
+
 ViewsAdmin.locations = async function (view) {
   const content = adminPage(view, "লোকেশন লিস্ট", "/admin/locations");
   const listArea = h("div");

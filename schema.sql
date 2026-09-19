@@ -137,6 +137,27 @@ CREATE TABLE IF NOT EXISTS external_sources (
 );
 
 -- ============================================================
+-- MULTISITE BRANDING (মাল্টিসাইট ব্র্যান্ডিং)
+-- Per-domain/subdomain override of site title, favicon and logo. Only
+-- consulted when settings.multisite_branding_enabled = '1' - see
+-- handlePublicSettings in admin.js. `domain` is matched against the
+-- request's hostname exactly as typed in the browser's URL bar (e.g.
+-- "chittagong.example.com" or "example.com"), so it must be stored
+-- lowercase and without a scheme/path/port.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS multisite_brands (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  domain     TEXT NOT NULL UNIQUE,
+  site_title TEXT,
+  logo_url   TEXT,
+  favicon_url TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_multisite_brands_domain ON multisite_brands(domain);
+
+-- ============================================================
 -- SETTINGS (key/value store for all admin-configurable options)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS settings (
@@ -228,7 +249,8 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('sms_daily_limit_user_initiated', '3'),
   ('sms_daily_limit_system', '3'),
   ('sms_over_limit_otp_message', 'আপনার দৈনিক এসএমএস লিমিট শেষ হয়েছে। 01883-600680 নাম্বারে কল করুন'),
-  ('sms_highest_daily_reset_month', '');
+  ('sms_highest_daily_reset_month', ''),
+  ('multisite_branding_enabled', '0');
 
 INSERT OR IGNORE INTO external_sources (name, url, sort_order) VALUES
   ('BloodBag', 'https://www.bloodbag.app/new-blood-request', 1);
