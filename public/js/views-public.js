@@ -181,34 +181,125 @@ ViewsPublic.forgotPassword = function (view) {
 // Bookmarkable and refresh-safe: on mount, if the requester is logged in
 // and already has an active donor lock (from before a refresh), jump
 // straight back to that donor card instead of re-asking for a blood group.
-ViewsPublic.seek = async function (view) {
+ViewsPublic.seek = async function (view, params) {
   view.innerHTML = "";
-  renderBloodGroupStep(view);
+  const bgFromUrl = normalizeBloodGroupParam(params ? params.get("bg") : null);
+  renderBloodGroupStep(view, bgFromUrl);
 };
 
-function renderBloodGroupStep(view) {
+const SEEK_BLOOD_GROUPS = ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"];
+
+// A literal "+" typed in a URL's query string (e.g. .../seek?bg=A+, exactly
+// how someone would naturally write or share it) is NOT the same as an
+// encoded "%2B" - per the query-string convention, an unencoded "+"
+// decodes to a space, so URLSearchParams hands back "A " (trailing space),
+// not "A+". Since a plain, unencoded "+" is the realistic case for a link
+// someone hand-types or pastes, trim a trailing space back into "+" before
+// validating rather than requiring the sender to properly percent-encode
+// it. Also accepts spelled-out word suffixes as an alternative to the
+// symbol - positive/pos -> "+", negative/neg -> "-" (case-insensitive),
+// e.g. ?bg=Apositive, ?bg=Apos, ?bg=Anegative, ?bg=Aneg all resolve the
+// same as ?bg=A+ / ?bg=A-. Checked longest-suffix-first so "POSITIVE"
+// isn't mistaken for ending in "POS" before the fuller word is tried.
+const BLOOD_GROUP_WORD_SUFFIXES = [["POSITIVE", "+"], ["NEGATIVE", "-"], ["POS", "+"], ["NEG", "-"], ["P", "+"], ["N", "-"]];
+function normalizeBloodGroupParam(raw) {
+  if (!raw) return null;
+  let v = raw.trim();
+  if (raw.endsWith(" ") && !v.endsWith("+") && !v.endsWith("-")) v += "+";
+  v = v.toUpperCase();
+  for (const [word, symbol] of BLOOD_GROUP_WORD_SUFFIXES) {
+    if (v.endsWith(word)) { v = v.slice(0, -word.length) + symbol; break; }
+  }
+  return v;
+}
+
+// Reverse of normalizeBloodGroupParam - shortest possible ?bg= code for a
+// given canonical group, used when building a shareable link (e.g. "O+" ->
+// "op", "AB-" -> "abn"). Kept short so the link looks clean when pasted
+// into WhatsApp/SMS - the full symbol ("O+") also works fine (see
+// normalizeBloodGroupParam) but "+" needs percent-encoding to survive a
+// URL cleanly, which "p"/"n" avoids entirely.
+function shortBloodGroupCode(g) {
+  if (!g) return "";
+  return g.endsWith("+") ? g.slice(0, -1).toLowerCase() + "p" : g.slice(0, -1).toLowerCase() + "n";
+}
+
+// English hh:mm am/pm + short month/day, matching the format used in the
+// seek link's shared preview text (e.g. "07:33pm, Sep 23") - distinct from
+// the Bengali-digit bnDateTime/bnDateTimeLong formatters in ui.js, which
+// are used everywhere else in the app.
+const EN_MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function enTimeShort(d) {
+  let hours = d.getHours();
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  const ampm = hours >= 12 ? "pm" : "am";
+  hours = hours % 12 || 12;
+  return `${String(hours).padStart(2, "0")}:${minutes}${ampm}, ${EN_MONTHS_SHORT[d.getMonth()]} ${d.getDate()}`;
+}
+
+// presetGroup comes from a shared /seek?bg=A+ style link (see
+// applyServerSideBranding in worker.js, which reads the same query param
+// server-side to set the social-preview title/description) - when present
+// and valid, the group is pre-selected and its donor count looked up
+// immediately, as if the visitor had just tapped that button themselves.
+function renderBloodGroupStep(view, presetGroup) {
   view.innerHTML = "";
   let selectedGroup = null;
+  let lastCount = null;
 
   const groupCard = h("div", { class: "card stack" });
-  groupCard.appendChild(h("div", { style: "display:flex;flex-direction:column;gap:2px" }, [
-  h("p", { class: "muted small", style: "margin:0" }, "চট্টগ্রাম জেলায়..."),
-  h("h2", { style: "margin:0" }, "কোন গ্রুপের রক্ত প্রয়োজন?"),
+  const shareBtn = h("button", { type: "button", class: "seek-share-btn", "aria-label": "শেয়ার করুন", style: "display:none" }, [icon("share-2")]);
+  groupCard.appendChild(h("div", { style: "position:relative;padding-right:44px" }, [
+    h("div", { style: "display:flex;flex-direction:column;gap:2px" }, [
+      h("p", { class: "muted small", style: "margin:0" }, "চট্টগ্রাম জেলায়..."),
+      h("h2", { style: "margin:0" }, "কোন গ্রুপের রক্ত প্রয়োজন?"),
+    ]),
+    shareBtn,
   ]));
   const countLine = h("p", { class: "muted" });
   const groupErr = h("div", { class: "field-error" });
   const continueBtn = h("button", { class: "btn btn-primary", style: "display:none" }, "এগিয়ে যান");
 
-  const grid = bloodGroupGrid(null, async (g) => {
+  async function selectGroup(g) {
     selectedGroup = g;
     groupErr.textContent = "";
     countLine.textContent = "লোড হচ্ছে…";
+    shareBtn.style.display = "flex";
     try {
       const { count } = await API.get(`/api/seek/count?bloodGroup=${encodeURIComponent(g)}`);
+      lastCount = count;
       countLine.textContent = `${toBnDigits(count)} জন উপযুক্ত রক্তদাতা রয়েছেন।`;
       continueBtn.style.display = "block";
     } catch (e) { countLine.textContent = ""; toast(e.message); }
-  });
+  }
+
+  shareBtn.onclick = async () => {
+    if (!selectedGroup) return;
+    // A fresh random id on every share forces WhatsApp/Telegram/etc to
+    // re-fetch the link's preview instead of reusing a stale cached one
+    // from an earlier share of the same bg (see the caching note by
+    // seekBrandOverride in worker.js) - it plays no other role and the
+    // server ignores it entirely. 4 chars (base36) gives 36^4 (~1.68M)
+    // combinations, plenty to dodge a cache collision for this purpose.
+    const i = Math.random().toString(36).slice(2, 6);
+    const url = new URL("/seek", location.origin);
+    url.searchParams.set("bg", shortBloodGroupCode(selectedGroup));
+    url.searchParams.set("i", i);
+    const shareUrl = url.href;
+
+    const countText = `${toBnDigits(lastCount ?? 0)} জন উপযুক্ত ${selectedGroup} রক্তদাতা`;
+    const shareText = `${shareUrl}\n${countText} (${enTimeShort(new Date())})`;
+
+    const copyMsg = `প্রি-ফিল মেসেজ কপি হয়েছে। এই লিংকে যারা ভিজিট করবে তাদের কাছে আগে থেকেই ${selectedGroup} রক্তের গ্রুপ নির্বাচিত থাকবে।`;
+    await copyToClipboard(shareText, copyMsg);
+
+    if (navigator.share) {
+      try { await navigator.share({ text: shareText }); } catch { /* user cancelled the share sheet - the link is already copied above regardless */ }
+    }
+  };
+
+  const validPreset = presetGroup && SEEK_BLOOD_GROUPS.includes(presetGroup) ? presetGroup : null;
+  const grid = bloodGroupGrid(validPreset, (g) => selectGroup(g));
   groupCard.appendChild(grid);
   groupCard.appendChild(countLine);
   groupCard.appendChild(groupErr);
@@ -230,6 +321,8 @@ function renderBloodGroupStep(view) {
       });
     }
   };
+
+  if (validPreset) selectGroup(validPreset);
 }
 
 async function startDonorSearch(view, bloodGroup) {

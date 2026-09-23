@@ -2,7 +2,7 @@ window.APP = { user: null, settings: null };
 
 const ROUTES = [
   { path: "/", render: (p, v) => ViewsPublic.landing(v) },
-  { path: "/seek", render: (p, v) => ViewsPublic.seek(v) },
+  { path: "/seek", render: (p, v) => ViewsPublic.seek(v, new URLSearchParams(location.search)) },
   { path: "/join", render: (p, v) => ViewsPublic.join(v) },
   { path: "/login", render: (p, v) => ViewsPublic.login(v) },
   { path: "/forgot-password", render: (p, v) => ViewsPublic.forgotPassword(v) },

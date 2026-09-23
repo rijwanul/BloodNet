@@ -1,4 +1,4 @@
-import { err } from "./lib/util.js";
+import { err, isValidBloodGroup } from "./lib/util.js";
 import * as auth from "./handlers/auth.js";
 import * as seek from "./handlers/seek.js";
 import * as donor from "./handlers/donor.js";
@@ -35,10 +35,10 @@ export default {
       const assetResp = await env.ASSETS.fetch(request);
       const isHtml = (assetResp.headers.get("content-type") || "").includes("text/html");
       if (assetResp.status !== 404) {
-        return isHtml ? await applyServerSideBranding(assetResp, env, url.hostname) : assetResp;
+        return isHtml ? await applyServerSideBranding(assetResp, env, url) : assetResp;
       }
       const shellResp = await env.ASSETS.fetch(new Request(new URL("/index.html", request.url), request));
-      return await applyServerSideBranding(shellResp, env, url.hostname);
+      return await applyServerSideBranding(shellResp, env, url);
     } catch (e) {
       return err(`সার্ভার সমস্যা: ${String(e && e.message ? e.message : e)}`, 500);
     }
@@ -57,38 +57,126 @@ export default {
   },
 };
 
-// Rewrites <title> and the favicon <link> directly in the served
-// index.html shell for the requesting hostname, using HTMLRewriter (native
-// to Workers, no extra dependency). This exists ALONGSIDE the client-side
-// applyBranding() in app.js (which reads /api/settings/public after boot)
-// rather than replacing it - the client-side version is still what updates
-// branding on soft (in-app) navigation without a full page reload, and
-// stays the source of truth for the theme color / logo image in the
-// topbar. This server-side pass fixes the "flash of default title/favicon"
-// on a hard page load - it ALWAYS applies the site-wide site_title/
-// favicon_url from settings (regardless of whether multisite branding is
-// on), and additionally applies a per-domain override on top when
-// multisite branding is on and the hostname matches an entry. Falls back
-// to leaving the static HTML untouched only if settings.site_title AND
-// settings.favicon_url are both genuinely empty, or on any lookup error -
-// never breaks page load over a branding lookup failure.
-async function applyServerSideBranding(shellResp, env, hostname) {
+// Rewrites <title>, the favicon <link>, and the Open Graph/Twitter meta
+// tags directly in the served index.html shell for the requesting
+// hostname (and, for /seek links, the requested blood group), using
+// HTMLRewriter (native to Workers, no extra dependency).
+// The OG tags matter separately from <title>/favicon: link-preview
+// crawlers (WhatsApp, Facebook, Telegram, etc) fetch the raw HTML and read
+// ONLY og:title/og:description/og:image - they never execute JS, so the
+// client-side applyBranding() in app.js (which runs after boot, once JS
+// has loaded) has zero effect on what shows up when a link is pasted into
+// a chat. This function is the only thing that can fix that, since it
+// rewrites the actual bytes sent back for the request.
+// This exists ALONGSIDE applyBranding() in app.js rather than replacing
+// it - the client-side version still handles branding updates on soft
+// (in-app) navigation without a full reload, and stays the source of
+// truth for the theme color / logo image in the topbar.
+// ALWAYS applies the site-wide settings (site_title, favicon_url,
+// welcome_subheading, social_preview_url) regardless of whether multisite
+// branding is on, and additionally layers a per-domain override on top
+// when multisite branding is on and the hostname matches an entry - a
+// brand's og:image falls back to its own logo_url if it has no dedicated
+// social_preview_url override (brands don't have their own social-preview
+// field; site-wide social_preview_url still wins when set, since it's
+// meant to be a purpose-made preview image rather than the logo).
+// For /seek?bg=<group> links specifically, title/description are further
+// overridden with a live donor count for that group (e.g. "৩জন A+
+// রক্তদাতা - IIUC Blood Network"), so sharing a seek link shows the
+// current availability right in the chat preview without anyone needing
+// to open it first - see seekBrandOverride() below. The og:image tag is
+// also dropped entirely for these links, since WhatsApp gives a
+// text-only card much more room for the title/description than the
+// large-image card it renders whenever an image is present.
+// Falls back to leaving the static HTML completely untouched on any
+// lookup error - never breaks page load over a branding lookup failure.
+async function applyServerSideBranding(shellResp, env, url) {
   try {
+    const hostname = url.hostname;
     const settings = await getSettings(env.DB);
     const brand = await getBrandForHostname(env, hostname);
-    const title = (brand && brand.site_title) || settings.site_title;
+    let title = (brand && brand.site_title) || settings.site_title;
+    let description = settings.welcome_subheading;
     const faviconUrl = (brand && brand.favicon_url) || settings.favicon_url;
-    if (!title && !faviconUrl) return shellResp;
+    const imageUrl = settings.social_preview_url || (brand && brand.logo_url) || settings.logo_url;
+
+    const seekOverride = await seekBrandOverride(env, url, title);
+    let suppressImage = false;
+    if (seekOverride) {
+      title = seekOverride.title;
+      description = seekOverride.description;
+      // A seek link's whole point is the text (donor count + instructions)
+      // - WhatsApp renders a large-image card whenever og:image is
+      // present, which squeezes the title/description down to a couple of
+      // truncated lines beside the thumbnail. Dropping the image entirely
+      // for these links makes WhatsApp fall back to its text-only card
+      // instead, giving the count and instructions room to show in full.
+      suppressImage = true;
+    }
+
+    if (!title && !faviconUrl && !description && !suppressImage && !imageUrl) return shellResp;
 
     const rewriter = new HTMLRewriter();
     if (title) {
       rewriter.on("title", {
         element(element) { element.setInnerContent(title); },
       });
+      rewriter.on("#ogTitle", {
+        element(element) { element.setAttribute("content", title); },
+      });
     }
-    if (faviconUrl) {
+    // Point the favicon at a transparent 1x1 pixel instead of removing the
+    // tag when suppressing the OG image - with no og:image present, some
+    // crawlers (WhatsApp included) fall back to <link rel="icon"> as the
+    // preview thumbnail, which defeats the point of dropping og:image for
+    // seek links. Swapping the href (rather than calling element.remove())
+    // avoids any risk of the tag removal disturbing the rest of the
+    // document during the streaming HTMLRewriter pass.
+    if (suppressImage) {
+      rewriter.on("#faviconLink", {
+        element(element) { element.setAttribute("href", "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="); },
+      });
+    } else if (faviconUrl) {
       rewriter.on("#faviconLink", {
         element(element) { element.setAttribute("href", faviconUrl); },
+      });
+    }
+    if (description) {
+      rewriter.on('meta[name="description"]', {
+        element(element) { element.setAttribute("content", description); },
+      });
+      rewriter.on("#ogDescription", {
+        element(element) { element.setAttribute("content", description); },
+      });
+    }
+    if (suppressImage) {
+      // Remove the tag outright rather than leaving content="" - some
+      // crawlers treat a present-but-empty og:image as "an image exists,
+      // go fetch it", which can still reserve a blank thumbnail slot
+      // instead of falling back to the text-only card. The static
+      // index.html also declares twitter:card=summary_large_image
+      // unconditionally - some crawlers (and WhatsApp's own fallback
+      // logic in some cases) consult that tag too and, seeing a
+      // large-image card requested with no og:image to match, may go
+      // hunting for SOME image on the page (e.g. the first <img> it finds)
+      // rather than cleanly falling back to text-only. Downgrading this to
+      // a plain "summary" card removes that ambiguity.
+      rewriter.on("#ogImage", {
+        element(element) { element.remove(); },
+      });
+      rewriter.on("#twitterCard", {
+        element(element) { element.setAttribute("content", "summary"); },
+      });
+    } else if (imageUrl) {
+      // Crawlers generally need an ABSOLUTE image URL, not a relative
+      // path - resolve against the current request's origin so an
+      // admin-entered "/img/logo.png" style value still works, while a
+      // full https:// URL (the common case for uploaded/ImgBB images)
+      // passes through unchanged.
+      let absoluteImageUrl = imageUrl;
+      try { absoluteImageUrl = new URL(imageUrl, `https://${hostname}`).href; } catch { /* leave as-is if unparseable */ }
+      rewriter.on("#ogImage", {
+        element(element) { element.setAttribute("content", absoluteImageUrl); },
       });
     }
     return rewriter.transform(shellResp);
@@ -97,7 +185,78 @@ async function applyServerSideBranding(shellResp, env, hostname) {
   }
 }
 
+const BN_DIGITS = ["০", "১", "২", "৩", "৪", "৫", "৬", "৭", "৮", "৯"];
+function toBnDigits(n) {
+  return String(n).replace(/[0-9]/g, (d) => BN_DIGITS[+d]);
+}
 
+// A literal "+" typed in a URL's query string (e.g. .../seek?bg=A+, exactly
+// how someone would naturally write or share it) is NOT the same as an
+// encoded "%2B" - an unencoded "+" decodes to a space, so
+// URLSearchParams hands back "A " (trailing space), not "A+". Also
+// accepts spelled-out word suffixes as an alternative to the symbol -
+// positive/pos -> "+", negative/neg -> "-" (case-insensitive), e.g.
+// ?bg=Apositive, ?bg=Apos, ?bg=Anegative, ?bg=Aneg. Mirrors the same
+// normalization in views-public.js's normalizeBloodGroupParam, since both
+// need to tolerate the same hand-typed link.
+const BLOOD_GROUP_WORD_SUFFIXES = [["POSITIVE", "+"], ["NEGATIVE", "-"], ["POS", "+"], ["NEG", "-"], ["P", "+"], ["N", "-"]];
+function normalizeBloodGroupParam(raw) {
+  if (!raw) return null;
+  let v = raw.trim();
+  if (raw.endsWith(" ") && !v.endsWith("+") && !v.endsWith("-")) v += "+";
+  v = v.toUpperCase();
+  for (const [word, symbol] of BLOOD_GROUP_WORD_SUFFIXES) {
+    if (v.endsWith(word)) { v = v.slice(0, -word.length) + symbol; break; }
+  }
+  return v;
+}
+
+// Formats "now" in Bangladesh local time as e.g. "11:53pm, Sep 23, 2026" -
+// matches the style used in the seek-link preview description below.
+// Included in that description (not just relied on being fresh at fetch
+// time) because WhatsApp and similar link-preview crawlers cache a
+// preview per exact URL for a while on their own end - since the donor
+// count in the title can go stale behind that cache with no way for this
+// app to force a re-fetch, stamping "সর্বশেষ আপডেট" into the visible
+// description at least makes a stale cached preview visibly stale rather
+// than silently misleading, instead of leaving the person to assume the
+// count shown is current.
+function formatSeekUpdateTimestamp(date) {
+  const timeStr = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Dhaka", hour: "numeric", minute: "2-digit", hour12: true,
+  }).format(date).replace(/\s?([AP])M$/i, (m, p) => p.toLowerCase() + "m");
+  const dateStr = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Dhaka", month: "short", day: "numeric", year: "numeric",
+  }).format(date);
+  return `${timeStr}, ${dateStr}`;
+}
+
+// For a /seek request carrying a valid ?bg=<group>, returns a
+// {title, description} pair showing the CURRENT number of eligible donors
+// for that group, e.g. title "৩জন A+ রক্তদাতা - IIUC Blood Network".
+// Returns null for any other path, a missing/invalid bg, or on any DB
+// error - callers should keep the normal site-wide title/description in
+// that case, never block the page over this.
+async function seekBrandOverride(env, url, siteTitle) {
+  if (url.pathname.replace(/\/+$/, "") !== "/seek") return null;
+  const bloodGroup = normalizeBloodGroupParam(url.searchParams.get("bg"));
+  if (!isValidBloodGroup(bloodGroup)) return null;
+  try {
+    const row = await env.DB
+      .prepare("SELECT COUNT(*) as c FROM users WHERE is_donor = 1 AND blood_group = ? AND eligibility_status = 'on' AND deleted = 0")
+      .bind(bloodGroup)
+      .first();
+    const count = row ? row.c : 0;
+    const titleSuffix = siteTitle ? ` - ${siteTitle}` : "";
+    const updatedAt = formatSeekUpdateTimestamp(new Date());
+    return {
+      title: `${toBnDigits(count)}জন ${bloodGroup} রক্তদাতা${titleSuffix}`,
+      description: `(${updatedAt} - সর্বশেষ আপডেট) লিংকে ক্লিক করে এক এক করে কল করে দেখুন কোন ডোনার রক্তদান করতে পারবেন।`,
+    };
+  } catch {
+    return null;
+  }
+}
 
 async function routeApi(request, env, path) {
   const method = request.method;
