@@ -129,8 +129,11 @@ ViewsAdmin.users = async function (view) {
       checks.push([cb, u.id]);
       const roleLabel = u.is_root_admin ? "রুট এডমিন" : u.is_admin ? "এডমিন" : "সাধারণ";
       const editBtn = h("button", { class: "btn btn-sm btn-outline", onclick: () => renderUserEditForm(formArea, u, loadUsers) }, [icon("pencil", "small"), " এডিট"]);
+      const mobileCell = u.username_display
+        ? h("a", { href: "/" + u.username_display, "data-link": "" }, u.mobile)
+        : u.mobile;
       table.appendChild(h("tr", {}, [
-        h("td", {}, cb), h("td", {}, u.mobile), h("td", {}, u.name || "-"), h("td", {}, roleLabel),
+        h("td", {}, cb), h("td", {}, mobileCell), h("td", {}, u.name || "-"), h("td", {}, roleLabel),
         h("td", {}, u.is_donor ? "হ্যাঁ" : "না"), h("td", {}, u.disabled ? "নিষ্ক্রিয়" : "সক্রিয়"), h("td", {}, editBtn),
       ]));
     });
