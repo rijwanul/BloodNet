@@ -58,25 +58,119 @@ function adminPage(view, title, activePath) {
   return content;
 }
 
+// Bengali labels for calls.status, matching the labels shown to donors on
+// the call-status buttons in views-public.js (renderCallStatusButtons) -
+// kept in sync manually since there's no shared constants module between
+// the public and admin JS bundles. 'pending' is the only status never
+// chosen by a donor (see schema.sql's comment on calls.status) - it just
+// means no outcome has been reported yet for that call.
+const CALL_STATUS_LABELS = {
+  pending: "অপেক্ষমাণ (কোনো ষ্ট্যাটাস দেওয়া হয়নি)",
+  no_answer: "কল যাচ্ছে না",
+  not_picked_up: "কল ধরেনি",
+  cannot_donate: "রক্ত দিতে পারবে না",
+  can_donate: "রক্ত দিতে পারবে",
+  not_called: "কল করিনি",
+};
+
+// Small self-contained horizontal bar chart, built as inline SVG - the app
+// has no charting library, and this dataset (a handful of call-status
+// counts) doesn't warrant adding one.
+function horizontalBarChart(rows) {
+  const max = Math.max(1, ...rows.map((r) => r.value));
+  const rowH = 30, gap = 8, labelW = 180, chartW = 320, width = labelW + chartW + 50;
+  const height = rows.length * (rowH + gap);
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("style", `max-width:${width}px`);
+  rows.forEach((r, i) => {
+    const y = i * (rowH + gap);
+    const barW = (r.value / max) * chartW;
+    const label = document.createElementNS(svg.namespaceURI, "text");
+    label.setAttribute("x", labelW - 8);
+    label.setAttribute("y", y + rowH / 2 + 4);
+    label.setAttribute("text-anchor", "end");
+    label.setAttribute("font-size", "12");
+    label.setAttribute("fill", "var(--ink-soft)");
+    label.textContent = r.label;
+    svg.appendChild(label);
+    const bar = document.createElementNS(svg.namespaceURI, "rect");
+    bar.setAttribute("x", labelW);
+    bar.setAttribute("y", y);
+    bar.setAttribute("width", String(Math.max(2, barW)));
+    bar.setAttribute("height", String(rowH));
+    bar.setAttribute("rx", "5");
+    bar.setAttribute("fill", "var(--primary)");
+    svg.appendChild(bar);
+    const val = document.createElementNS(svg.namespaceURI, "text");
+    val.setAttribute("x", labelW + barW + 8);
+    val.setAttribute("y", y + rowH / 2 + 4);
+    val.setAttribute("font-size", "12");
+    val.setAttribute("font-weight", "700");
+    val.setAttribute("fill", "var(--ink)");
+    val.textContent = String(r.value);
+    svg.appendChild(val);
+  });
+  return svg;
+}
+
 // -------------------------------------------------------------- DASHBOARD
 ViewsAdmin.dashboard = async function (view) {
   const content = adminPage(view, "এডমিন প্যানেল", "/admin");
   const stats = await API.get("/api/admin/analytics");
+
+  // Only these three surface up top per spec - everything else lives
+  // behind the "See more" section below.
   const grid = h("div", { class: "stat-grid" });
-  const cards = [
-    ["মোট ইউজার", stats.totalUsers], ["মোট ডোনার", stats.totalDonors], ["এলিজিবল ডোনার", stats.totalEligible],
-    ["মোট কল", stats.totalCallsMade], ["রক্ত ম্যানেজ হয়েছে", stats.totalManaged], ["স্থগিত ডোনার", stats.totalSnoozed],
+  const primaryCards = [
+    ["মোট ইউজার", stats.totalUsers],
+    ["এভেইলেবল ডোনার", stats.totalAvailable],
+    ["রক্ত ম্যানেজ হয়েছে", stats.totalManaged],
   ];
-  cards.forEach(([label, num]) => grid.appendChild(h("div", { class: "stat-card" }, [h("div", { class: "num" }, String(num)), h("div", { class: "label" }, label)])));
+  primaryCards.forEach(([label, num]) => grid.appendChild(h("div", { class: "stat-card" }, [h("div", { class: "num" }, String(num)), h("div", { class: "label" }, label)])));
   content.appendChild(grid);
+
+  const moreDetails = h("details", { class: "card" });
+  moreDetails.appendChild(h("summary", { class: "stat-see-more-toggle" }, "আরও দেখুন"));
+  const moreGrid = h("div", { class: "stat-grid", style: "margin-top:14px" });
+  const secondaryCards = [
+    ["কলের ষ্ট্যাটাস আপডেট করা হয়েছে", stats.totalStatusUpdated],
+    ["মোট সিকার", stats.totalSeekers],
+    ["মোট ডোনার", stats.totalDonors],
+    ["ষ্ট্যাটাস বন্ধ, সর্বশেষ রক্তদানের তারিখ দেয়া নেই", stats.totalOffNoDonation],
+    ["সময় হয়েছে, কিন্তু ষ্ট্যাটাস বন্ধ", stats.totalOffPastWait],
+    ["রক্ত দেওয়ার সময় হয়নি", stats.totalWaitingAfterDonation],
+    ["সাময়িক স্থগিত", stats.totalSnoozed],
+    ["মোট কল করা হয়েছে", stats.totalCallsMade],
+  ];
+  secondaryCards.forEach(([label, num]) => moreGrid.appendChild(h("div", { class: "stat-card" }, [h("div", { class: "num" }, String(num)), h("div", { class: "label" }, label)])));
+  moreDetails.appendChild(moreGrid);
+  content.appendChild(moreDetails);
 
   const groupCard = h("div", { class: "card" });
   groupCard.appendChild(h("h3", {}, "রক্তের গ্রুপ অনুযায়ী"));
   const table = h("table");
-  table.appendChild(h("tr", {}, [h("th", {}, "গ্রুপ"), h("th", {}, "মোট"), h("th", {}, "এলিজিবল")]));
+  table.appendChild(h("tr", {}, [h("th", {}, "গ্রুপ"), h("th", {}, "মোট"), h("th", {}, "এভেইলেবল")]));
   (stats.byGroup || []).forEach((g) => table.appendChild(h("tr", {}, [h("td", {}, g.blood_group), h("td", {}, String(g.total)), h("td", {}, String(g.eligible || 0))])));
   groupCard.appendChild(h("div", { class: "table-wrap" }, table));
   content.appendChild(groupCard);
+
+  const callStatusCard = h("div", { class: "card" });
+  callStatusCard.appendChild(h("h3", {}, "কল স্ট্যাটাস অনুযায়ী"));
+  const statusRows = (stats.byCallStatus || [])
+    .map((r) => ({ key: r.status, label: CALL_STATUS_LABELS[r.status] || r.status, value: r.total }))
+    .sort((a, b) => b.value - a.value);
+  if (statusRows.length) {
+    callStatusCard.appendChild(h("div", { style: "overflow-x:auto" }, horizontalBarChart(statusRows)));
+    const statusTable = h("table");
+    statusTable.appendChild(h("tr", {}, [h("th", {}, "স্ট্যাটাস"), h("th", {}, "সংখ্যা")]));
+    statusRows.forEach((r) => statusTable.appendChild(h("tr", {}, [h("td", {}, r.label), h("td", {}, String(r.value))])));
+    callStatusCard.appendChild(h("div", { class: "table-wrap", style: "margin-top:14px" }, statusTable));
+  } else {
+    callStatusCard.appendChild(h("p", { class: "muted" }, "এখনো কোনো কল হয়নি।"));
+  }
+  content.appendChild(callStatusCard);
 };
 
 // ------------------------------------------------------------------ USERS

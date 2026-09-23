@@ -21,11 +21,42 @@ export async function handleAnalytics(request, env) {
   const db = env.DB;
   const totalUsers = (await db.prepare("SELECT COUNT(*) c FROM users WHERE deleted = 0").first()).c;
   const totalDonors = (await db.prepare("SELECT COUNT(*) c FROM users WHERE deleted = 0 AND is_donor = 1").first()).c;
-  const totalEligible = (await db.prepare("SELECT COUNT(*) c FROM users WHERE deleted = 0 AND is_donor = 1 AND eligibility_status = 'on'").first()).c;
+  const totalAvailable = (await db.prepare("SELECT COUNT(*) c FROM users WHERE deleted = 0 AND is_donor = 1 AND eligibility_status = 'on'").first()).c;
   const totalCallsMade = (await db.prepare("SELECT COUNT(*) c FROM calls").first()).c;
   const totalManaged = (await db.prepare("SELECT COUNT(*) c FROM calls WHERE status = 'can_donate'").first()).c;
   const totalCallsReceived = totalCallsMade;
-  const totalSnoozed = (await db.prepare("SELECT COUNT(*) c FROM users WHERE deleted = 0 AND is_donor = 1 AND eligibility_status = 'snoozed'").first()).c;
+
+  // "কল স্ট্যাটাস আপডেট করা হয়েছে" - every call row starts as 'pending' the
+  // moment a donor is shown/locked to a requester (see seek.js's INSERT)
+  // and only moves to a real status once the requester reports back, so
+  // != 'pending' is exactly "an outcome was actually recorded for this call".
+  const totalStatusUpdated = (await db.prepare("SELECT COUNT(*) c FROM calls WHERE status != 'pending'").first()).c;
+
+  // "মোট সিকার" - distinct people who have made at least one seek request
+  // (appear as a requester on any call row), not the same as totalUsers.
+  const totalSeekers = (await db.prepare("SELECT COUNT(DISTINCT requester_id) c FROM calls").first()).c;
+
+  // The four eligibility sub-states below all correspond to donor rows,
+  // split by eligibility_status/last_donation_date/snooze_reason - see the
+  // eligibility_status column comment in schema.sql ('on' | 'snoozed' |
+  // 'off') and donor.js's handleDonorEligibility, which is the only place
+  // eligibility_snooze_reason values are set. 'সাম্প্রতিক রক্তদান' is the
+  // one reason string used exclusively for the automatic post-donation
+  // wait window (see donor.js's handleLogDonation) - every other snoozed
+  // reason ("আজকের জন্য বন্ধ", "২ ঘন্টার জন্য স্থগিত", etc) is a donor's own
+  // deliberate temporary pause that the scheduled sweep wakes automatically.
+  const totalOffNoDonation = (await db
+    .prepare("SELECT COUNT(*) c FROM users WHERE deleted = 0 AND is_donor = 1 AND eligibility_status = 'off' AND last_donation_date IS NULL")
+    .first()).c;
+  const totalOffPastWait = (await db
+    .prepare("SELECT COUNT(*) c FROM users WHERE deleted = 0 AND is_donor = 1 AND eligibility_status = 'off' AND last_donation_date IS NOT NULL")
+    .first()).c;
+  const totalWaitingAfterDonation = (await db
+    .prepare("SELECT COUNT(*) c FROM users WHERE deleted = 0 AND is_donor = 1 AND eligibility_status = 'snoozed' AND eligibility_snooze_reason = 'সাম্প্রতিক রক্তদান'")
+    .first()).c;
+  const totalSnoozed = (await db
+    .prepare("SELECT COUNT(*) c FROM users WHERE deleted = 0 AND is_donor = 1 AND eligibility_status = 'snoozed' AND (eligibility_snooze_reason IS NULL OR eligibility_snooze_reason != 'সাম্প্রতিক রক্তদান')")
+    .first()).c;
 
   const byGroup = await db
     .prepare(
@@ -34,15 +65,25 @@ export async function handleAnalytics(request, env) {
     )
     .all();
 
+  const byCallStatus = await db
+    .prepare(`SELECT status, COUNT(*) as total FROM calls GROUP BY status`)
+    .all();
+
   return ok({
     totalUsers,
     totalDonors,
-    totalEligible,
+    totalAvailable,
     totalCallsMade,
     totalManaged,
     totalCallsReceived,
     totalSnoozed,
+    totalStatusUpdated,
+    totalSeekers,
+    totalOffNoDonation,
+    totalOffPastWait,
+    totalWaitingAfterDonation,
     byGroup: byGroup.results,
+    byCallStatus: byCallStatus.results,
   });
 }
 
