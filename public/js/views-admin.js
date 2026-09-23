@@ -131,8 +131,8 @@ ViewsAdmin.dashboard = async function (view) {
   primaryCards.forEach(([label, num]) => grid.appendChild(h("div", { class: "stat-card" }, [h("div", { class: "num" }, String(num)), h("div", { class: "label" }, label)])));
   content.appendChild(grid);
 
-  const moreDetails = h("details", { class: "card" });
-  moreDetails.appendChild(h("summary", { class: "stat-see-more-toggle" }, "আরও দেখুন"));
+  const moreDetails = h("details", { class: "card stat-see-more-card" });
+  moreDetails.appendChild(h("summary", { class: "stat-see-more-toggle" }, " আরো দেখুন"));
   const moreGrid = h("div", { class: "stat-grid", style: "margin-top:14px" });
   const secondaryCards = [
     ["কলের ষ্ট্যাটাস আপডেট করা হয়েছে", stats.totalStatusUpdated],

@@ -245,9 +245,10 @@ th { color: var(--ink-soft); font-weight: 600; font-size: 0.8rem; text-transform
 .stat-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; text-align: center; }
 .stat-card .num { font-size: 1.6rem; font-weight: 700; font-family: var(--font-bn); color: var(--primary); }
 .stat-card .label { font-size: 0.8rem; color: var(--ink-soft); }
+.stat-see-more-card { margin-top: 16px; }
 .stat-see-more-toggle { cursor: pointer; font-weight: 700; color: var(--primary); list-style: none; user-select: none; }
 .stat-see-more-toggle::-webkit-details-marker { display: none; }
-.stat-see-more-toggle::before { content: "▸ "; display: inline-block; transition: transform 0.15s; }
+.stat-see-more-toggle::before { content: "▸"; display: inline-block; margin-right: 6px; transition: transform 0.15s; }
 details[open] > .stat-see-more-toggle::before { transform: rotate(90deg); }
 
 .skeleton { background: linear-gradient(90deg, var(--surface-2) 25%, #ece4de 37%, var(--surface-2) 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; border-radius: var(--radius-sm); height: 18px; }

@@ -22,19 +22,50 @@ export async function handleAnalytics(request, env) {
   const totalUsers = (await db.prepare("SELECT COUNT(*) c FROM users WHERE deleted = 0").first()).c;
   const totalDonors = (await db.prepare("SELECT COUNT(*) c FROM users WHERE deleted = 0 AND is_donor = 1").first()).c;
   const totalAvailable = (await db.prepare("SELECT COUNT(*) c FROM users WHERE deleted = 0 AND is_donor = 1 AND eligibility_status = 'on'").first()).c;
-  const totalCallsMade = (await db.prepare("SELECT COUNT(*) c FROM calls").first()).c;
-  const totalManaged = (await db.prepare("SELECT COUNT(*) c FROM calls WHERE status = 'can_donate'").first()).c;
+
+  // Every calls query below joins back to users on both sides and
+  // excludes deleted = 1 requesters/donors, so a deleted account's call
+  // history stops contributing to these numbers instead of lingering in
+  // the calls table (rows there are never deleted when an account is,
+  // per handleDeleteUser - only the users row is soft-deleted).
+  const totalCallsMade = (await db
+    .prepare(
+      `SELECT COUNT(*) c FROM calls c
+       JOIN users req ON req.id = c.requester_id AND req.deleted = 0
+       JOIN users don ON don.id = c.donor_id AND don.deleted = 0`
+    )
+    .first()).c;
+  const totalManaged = (await db
+    .prepare(
+      `SELECT COUNT(*) c FROM calls c
+       JOIN users req ON req.id = c.requester_id AND req.deleted = 0
+       JOIN users don ON don.id = c.donor_id AND don.deleted = 0
+       WHERE c.status = 'can_donate'`
+    )
+    .first()).c;
   const totalCallsReceived = totalCallsMade;
 
   // "কল স্ট্যাটাস আপডেট করা হয়েছে" - every call row starts as 'pending' the
   // moment a donor is shown/locked to a requester (see seek.js's INSERT)
   // and only moves to a real status once the requester reports back, so
   // != 'pending' is exactly "an outcome was actually recorded for this call".
-  const totalStatusUpdated = (await db.prepare("SELECT COUNT(*) c FROM calls WHERE status != 'pending'").first()).c;
+  const totalStatusUpdated = (await db
+    .prepare(
+      `SELECT COUNT(*) c FROM calls c
+       JOIN users req ON req.id = c.requester_id AND req.deleted = 0
+       JOIN users don ON don.id = c.donor_id AND don.deleted = 0
+       WHERE c.status != 'pending'`
+    )
+    .first()).c;
 
   // "মোট সিকার" - distinct people who have made at least one seek request
   // (appear as a requester on any call row), not the same as totalUsers.
-  const totalSeekers = (await db.prepare("SELECT COUNT(DISTINCT requester_id) c FROM calls").first()).c;
+  const totalSeekers = (await db
+    .prepare(
+      `SELECT COUNT(DISTINCT c.requester_id) c FROM calls c
+       JOIN users req ON req.id = c.requester_id AND req.deleted = 0`
+    )
+    .first()).c;
 
   // The four eligibility sub-states below all correspond to donor rows,
   // split by eligibility_status/last_donation_date/snooze_reason - see the
@@ -66,7 +97,12 @@ export async function handleAnalytics(request, env) {
     .all();
 
   const byCallStatus = await db
-    .prepare(`SELECT status, COUNT(*) as total FROM calls GROUP BY status`)
+    .prepare(
+      `SELECT c.status, COUNT(*) as total FROM calls c
+       JOIN users req ON req.id = c.requester_id AND req.deleted = 0
+       JOIN users don ON don.id = c.donor_id AND don.deleted = 0
+       GROUP BY c.status`
+    )
     .all();
 
   return ok({

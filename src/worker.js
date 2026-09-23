@@ -251,7 +251,7 @@ async function seekBrandOverride(env, url, siteTitle) {
     const updatedAt = formatSeekUpdateTimestamp(new Date());
     return {
       title: `${toBnDigits(count)}জন ${bloodGroup} রক্তদাতা${titleSuffix}`,
-      description: `(${updatedAt} - সর্বশেষ আপডেট) লিংকে ক্লিক করে এক এক করে কল করে দেখুন কোন ডোনার রক্তদান করতে পারবেন।`,
+      description: `(${updatedAt} - সর্বশেষ আপডেট) লিংকে ক্লিক করে এক এক করে কল করে দেখুন কোন ডোনার রক্তদান করতে পারবেন। কলের পর, ডোনার কি বলেছেন তা জানিয়ে দিয়ে সাহায্য করুন অন্যান্যদের।`,
     };
   } catch {
     return null;
