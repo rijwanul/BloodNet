@@ -79,7 +79,7 @@ main { flex: 1; padding: 20px 18px 8px; }
 .pulse-divider.accent path { stroke: var(--primary); opacity: 0.55; }
 
 /* ---------- cards & layout ---------- */
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); overflow-wrap: break-word; }
 .card--flat { box-shadow: none; }
 
 /* Clickable list rows (e.g. মাল্টিসাইট ব্র্যান্ডিং domain list) - a plain
@@ -88,6 +88,7 @@ main { flex: 1; padding: 20px 18px 8px; }
 .card--clickable { cursor: pointer; }
 .card--clickable:hover { border-color: var(--primary); box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
 .stack { display: flex; flex-direction: column; gap: 12px; }
+.stack > * { min-width: 0; overflow-wrap: break-word; }
 .row { display: flex; align-items: center; gap: 10px; }
 .center { text-align: center; }
 .muted { color: var(--ink-soft); font-size: 0.92rem; }
@@ -361,7 +362,7 @@ details[open] > .stat-see-more-toggle::before { transform: rotate(90deg); }
      sidebar floats over the freed space rather than the topbar reflowing
      around it), so #app's padding also stays constant either way. */
   #app { margin: 0; max-width: none; padding-left: 96px; padding-top: 76px; padding-bottom: 40px; padding-right: 0; }
-  #view { max-width: 760px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
+  #view { max-width: 760px; width: 100%; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
   #toast { bottom: 24px; }
 }
 

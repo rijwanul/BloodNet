@@ -43,7 +43,18 @@ export async function handleSeekCount(request, env) {
     .prepare("SELECT COUNT(*) as c FROM users WHERE is_donor = 1 AND blood_group = ? AND eligibility_status = 'on' AND deleted = 0 AND id != ?")
     .bind(bloodGroup, requester ? requester.id : 0)
     .first();
-  return ok({ count: row.c });
+  // This endpoint needs no login (getCurrentUser above returns null
+  // gracefully when logged out), so it's the earliest point the frontend
+  // can know the count is zero - bundling externalSources here lets the
+  // seek page show alternative resources immediately instead of forcing
+  // a logged-out visitor through the mobile-number gate first only to
+  // land on the exact same "no donors" message afterwards.
+  let externalSources = [];
+  if (row.c === 0) {
+    const { results } = await env.DB.prepare("SELECT name, url FROM external_sources ORDER BY sort_order ASC").all();
+    externalSources = results;
+  }
+  return ok({ count: row.c, externalSources });
 }
 
 function donorPublicShape(d, settings) {

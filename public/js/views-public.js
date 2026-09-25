@@ -259,17 +259,33 @@ function renderBloodGroupStep(view, presetGroup) {
   const countLine = h("p", { class: "muted" });
   const groupErr = h("div", { class: "field-error" });
   const continueBtn = h("button", { class: "btn btn-primary", style: "display:none" }, "এগিয়ে যান");
+  // Shown instead of continueBtn when the count comes back 0 - there's
+  // nothing to search for regardless of login state, so a logged-out
+  // visitor should see this immediately rather than being sent through
+  // the mobile-number gate first only to land on the same message after.
+  const noDonorBox = h("div", { class: "card center stack", style: "display:none" });
 
   async function selectGroup(g) {
     selectedGroup = g;
     groupErr.textContent = "";
     countLine.textContent = "লোড হচ্ছে…";
     shareBtn.style.display = "flex";
+    continueBtn.style.display = "none";
+    noDonorBox.style.display = "none";
+    noDonorBox.innerHTML = "";
     try {
-      const { count } = await API.get(`/api/seek/count?bloodGroup=${encodeURIComponent(g)}`);
+      const { count, externalSources } = await API.get(`/api/seek/count?bloodGroup=${encodeURIComponent(g)}`);
       lastCount = count;
       countLine.textContent = `${toBnDigits(count)} জন উপযুক্ত রক্তদাতা রয়েছেন।`;
-      continueBtn.style.display = "block";
+      if (count === 0) {
+        noDonorBox.appendChild(h("p", {}, "দুঃখিত! এই গ্রুপের কোনো রক্তদাতা আমাদের প্ল্যাটফর্মে বর্তমানে এভেইলেভল নেই। নিম্নোক্ত মাধ্যমসমূহে চেষ্টা করতে পারেন..."));
+        const list = h("div", { class: "link-list" });
+        (externalSources || []).forEach((s) => list.appendChild(h("a", { href: s.url, target: "_blank", rel: "noopener" }, s.name)));
+        noDonorBox.appendChild(list);
+        noDonorBox.style.display = "flex";
+      } else {
+        continueBtn.style.display = "block";
+      }
     } catch (e) { countLine.textContent = ""; toast(e.message); }
   }
 
@@ -304,16 +320,22 @@ function renderBloodGroupStep(view, presetGroup) {
   groupCard.appendChild(countLine);
   groupCard.appendChild(groupErr);
   groupCard.appendChild(continueBtn);
+  groupCard.appendChild(noDonorBox);
   view.appendChild(groupCard);
 
   // A blood group must be selected before proceeding - enforced here
-  // regardless of login state, not only after the login gate.
+  // regardless of login state, not only after the login gate. The gate
+  // box is created once and cleared+reused on every click rather than
+  // appended fresh each time, since re-appending an already-attached
+  // node just moves it (harmless) but re-creating+appending a NEW one on
+  // every click stacked up one login form per click.
+  const gateBox = h("div");
   continueBtn.onclick = () => {
     if (!selectedGroup) { groupErr.textContent = "রক্তের গ্রুপ নির্বাচন করুন"; return; }
     if (APP.user) {
       startDonorSearch(view, selectedGroup);
     } else {
-      const gateBox = h("div");
+      gateBox.innerHTML = "";
       view.appendChild(gateBox);
       renderAccountGate(gateBox, {
         intro: "আপনার মোবাইল নাম্বার প্রদান করুন…",
