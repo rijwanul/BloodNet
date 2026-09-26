@@ -22,6 +22,8 @@ const ROUTES = [
   { path: "/admin/site-settings", render: (p, v) => ViewsAdmin.siteSettings(v) },
   { path: "/admin/multisite-branding", render: (p, v) => ViewsAdmin.multisiteBranding(v) },
   { path: "/admin/locations", render: (p, v) => ViewsAdmin.locations(v) },
+  { path: "/admin/telegram-bots", render: (p, v) => ViewsAdmin.telegramBots(v) },
+  { path: "/admin/telegram-log", render: (p, v) => ViewsAdmin.telegramLog(v) },
   { path: "/admin/help", render: (p, v) => ViewsAdmin.helpDoc(v) },
 ];
 

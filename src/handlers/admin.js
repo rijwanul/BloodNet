@@ -4,6 +4,7 @@ import { getSettings, setSettings, settingInt } from "../lib/settings.js";
 import { getCurrentUser } from "../lib/authctx.js";
 import { hasPermission, isAnyAdmin, PERMISSIONS } from "../lib/permissions.js";
 import { logActivity } from "../lib/activity.js";
+import { getMe, setWebhook, deleteWebhook, deleteMessage } from "../lib/telegramApi.js";
 
 async function requirePerm(request, env, permKey) {
   const user = await getCurrentUser(request, env);
@@ -907,4 +908,201 @@ export async function handleClaimUnregisteredDonorbdSlugs(request, env) {
     actionText: `donor.bd আনরেজিস্টার্ড ইউজারনেইম ক্লেইম করেছেন: ${result.fixed}টি সফল, ${result.failed}টি ব্যর্থ`,
   });
   return ok(result);
+}
+
+// ------------------------------------------------------------ TELEGRAM BOTS
+// See the Telegram bot implementation plan §6 for the full spec. Tokens/
+// webhook secrets live in D1 (not wrangler secret) since the set of bots is
+// admin-managed and dynamic - see telegram_bots in
+// arc/migration_telegram_bot.sql. The raw token is NEVER sent back to the
+// admin UI once saved (see botPublicShape's maskToken below) - an edit
+// leaves the token field blank, meaning "keep the existing token".
+
+function genWebhookSecret() {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function maskToken(token) {
+  if (!token) return "";
+  if (token.length <= 12) return `${token.slice(0, 2)}…${token.slice(-2)}`;
+  return `${token.slice(0, 10)}…${token.slice(-4)}`;
+}
+
+function botPublicShape(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    botUsername: row.bot_username,
+    tokenMasked: maskToken(row.bot_token),
+    enabledDm: !!row.enabled_dm,
+    enabledGroups: !!row.enabled_groups,
+    isActive: !!row.is_active,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function handleTelegramBotsList(request, env) {
+  const { resp } = await requirePerm(request, env, "manage_telegram_bots");
+  if (resp) return resp;
+  const { results } = await env.DB.prepare("SELECT * FROM telegram_bots ORDER BY created_at DESC").all();
+  return ok({ bots: results.map(botPublicShape) });
+}
+
+// Handles both create (no id) and edit (id given), including a lightweight
+// active/inactive-only toggle (name/botToken omitted, isActive given) that
+// skips the getMe/setWebhook round-trip entirely since nothing about the
+// bot's Telegram-side registration needs to change for that.
+export async function handleTelegramBotSave(request, env, id) {
+  const { user: admin, resp } = await requirePerm(request, env, "manage_telegram_bots");
+  if (resp) return resp;
+  const body = await readJson(request);
+
+  if (id && body.name === undefined && body.botToken === undefined && body.isActive !== undefined) {
+    const existing = await env.DB.prepare("SELECT name FROM telegram_bots WHERE id = ?").bind(id).first();
+    if (!existing) return err("বট পাওয়া যায়নি", 404);
+    await env.DB.prepare("UPDATE telegram_bots SET is_active = ?, updated_at = ? WHERE id = ?").bind(body.isActive ? 1 : 0, nowIso(), id).run();
+    await logActivity(env.DB, { actorUser: admin, category: "admin", actionText: `টেলিগ্রাম বট ${body.isActive ? "চালু" : "বন্ধ"} করেছেন: ${existing.name}` });
+    return ok({ updated: true });
+  }
+
+  const name = (body.name || "").trim();
+  if (!name) return err("বটের নাম দিন");
+  const tokenInput = (body.botToken || "").trim();
+  const isCreate = !id;
+  if (isCreate && !tokenInput) return err("টেলিগ্রাম বট টোকেন দিন");
+
+  const enabledDm = body.enabledDm !== undefined ? (body.enabledDm ? 1 : 0) : 1;
+  const enabledGroups = body.enabledGroups !== undefined ? (body.enabledGroups ? 1 : 0) : 1;
+
+  // Never derived from the request's own origin (a webhook call has no
+  // "browser origin" the way a page load does) - always the configured
+  // public domain, falling back to this admin request's origin only if
+  // that var was never set, so bot setup doesn't hard-fail on a fresh
+  // install before PUBLIC_SEEK_BASE_URL is configured.
+  const publicBaseUrl = (env.PUBLIC_SEEK_BASE_URL || new URL(request.url).origin).replace(/\/+$/, "");
+
+  if (isCreate) {
+    let botUsername;
+    try {
+      botUsername = (await getMe(tokenInput)).username;
+    } catch (e) {
+      return err(e.message);
+    }
+    const secret = genWebhookSecret();
+    const res = await env.DB
+      .prepare("INSERT INTO telegram_bots (name, bot_token, bot_username, webhook_secret, enabled_dm, enabled_groups, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)")
+      .bind(name, tokenInput, botUsername, secret, enabledDm, enabledGroups, nowIso(), nowIso())
+      .run();
+    const newId = res.meta.last_row_id;
+    try {
+      await setWebhook(tokenInput, `${publicBaseUrl}/api/telegram/webhook/${newId}`, secret);
+    } catch (e) {
+      // Both getMe and setWebhook must succeed before the row is treated as
+      // persisted (plan §6.4) - roll the tentative insert back.
+      await env.DB.prepare("DELETE FROM telegram_bots WHERE id = ?").bind(newId).run();
+      return err(`ওয়েবহুক রেজিস্টার ব্যর্থ: ${e.message}`);
+    }
+    await logActivity(env.DB, { actorUser: admin, category: "admin", actionText: `টেলিগ্রাম বট যোগ করেছেন: ${name} (@${botUsername})` });
+    return ok({ id: newId });
+  }
+
+  const existing = await env.DB.prepare("SELECT * FROM telegram_bots WHERE id = ?").bind(id).first();
+  if (!existing) return err("বট পাওয়া যায়নি", 404);
+
+  let tokenToUse = existing.bot_token;
+  let botUsername = existing.bot_username;
+  let secret = existing.webhook_secret;
+  let tokenChanged = false;
+
+  if (tokenInput) {
+    try {
+      botUsername = (await getMe(tokenInput)).username;
+    } catch (e) {
+      return err(e.message);
+    }
+    tokenToUse = tokenInput;
+    secret = genWebhookSecret(); // regenerated on every token change - simplest and safest (plan §6.4)
+    tokenChanged = true;
+  }
+
+  try {
+    await setWebhook(tokenToUse, `${publicBaseUrl}/api/telegram/webhook/${id}`, secret);
+  } catch (e) {
+    return err(`ওয়েবহুক রেজিস্টার ব্যর্থ: ${e.message}`);
+  }
+
+  await env.DB
+    .prepare("UPDATE telegram_bots SET name = ?, bot_token = ?, bot_username = ?, webhook_secret = ?, enabled_dm = ?, enabled_groups = ?, updated_at = ? WHERE id = ?")
+    .bind(name, tokenToUse, botUsername, secret, enabledDm, enabledGroups, nowIso(), id)
+    .run();
+  await logActivity(env.DB, { actorUser: admin, category: "admin", actionText: `টেলিগ্রাম বট আপডেট করেছেন: ${name}${tokenChanged ? " (টোকেন পরিবর্তিত)" : ""}` });
+  return ok({ updated: true });
+}
+
+export async function handleTelegramBotDelete(request, env, id) {
+  const { user: admin, resp } = await requirePerm(request, env, "manage_telegram_bots");
+  if (resp) return resp;
+  const row = await env.DB.prepare("SELECT name, bot_token FROM telegram_bots WHERE id = ?").bind(id).first();
+  // Best-effort - stops Telegram retrying against a URL this app no longer
+  // intends to serve; a failure here shouldn't block the row from being removed.
+  if (row) await deleteWebhook(row.bot_token);
+  await env.DB.prepare("DELETE FROM telegram_bots WHERE id = ?").bind(id).run();
+  await logActivity(env.DB, { actorUser: admin, category: "admin", actionText: `টেলিগ্রাম বট ডিলিট করেছেন: ${row ? row.name : id}` });
+  return ok({ deleted: true });
+}
+
+// -------------------------------------------------------------- TELEGRAM LOG
+export async function handleTelegramMessagesList(request, env) {
+  const { resp } = await requirePerm(request, env, "manage_telegram_bots");
+  if (resp) return resp;
+  const url = new URL(request.url);
+  const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+  const perPage = 50;
+  const botIdFilter = url.searchParams.get("botId");
+
+  let query = "SELECT tm.*, tb.name as bot_name FROM telegram_messages tm LEFT JOIN telegram_bots tb ON tb.id = tm.bot_id WHERE 1=1";
+  const binds = [];
+  if (botIdFilter) { query += " AND tm.bot_id = ?"; binds.push(botIdFilter); }
+  query += " ORDER BY tm.created_at DESC LIMIT ? OFFSET ?";
+  binds.push(perPage, (page - 1) * perPage);
+  const { results } = await env.DB.prepare(query).bind(...binds).all();
+
+  let countQuery = "SELECT COUNT(*) as c FROM telegram_messages WHERE 1=1";
+  const countBinds = [];
+  if (botIdFilter) { countQuery += " AND bot_id = ?"; countBinds.push(botIdFilter); }
+  const countRow = await env.DB.prepare(countQuery).bind(...countBinds).first();
+
+  return ok({ entries: results, page, perPage, total: countRow.c, totalPages: Math.max(1, Math.ceil(countRow.c / perPage)) });
+}
+
+// Deletes the BOT'S OWN outbound reply only (plan §5.4) - the inbound
+// message is never touched, which sidesteps the admin-rights/Guest-Bot
+// limitation entirely (a bot can always delete its own messages in any
+// chat/group/supergroup it's a member of, no special rights needed).
+export async function handleTelegramMessageDelete(request, env, id) {
+  const { resp } = await requirePerm(request, env, "manage_telegram_bots");
+  if (resp) return resp;
+  const row = await env.DB
+    .prepare("SELECT tm.*, tb.bot_token FROM telegram_messages tm LEFT JOIN telegram_bots tb ON tb.id = tm.bot_id WHERE tm.id = ?")
+    .bind(id)
+    .first();
+  if (!row) return err("পাওয়া যায়নি", 404);
+  if (!row.outbound_message_id) return err("এই এন্ট্রির কোনো আউটবাউন্ড মেসেজ নেই");
+  if (!row.bot_token) return err("এই বটটি আর কনফিগার করা নেই, ডিলিট করা যাচ্ছে না");
+
+  // created_at is stored as "YYYY-MM-DD HH:MM:SS" UTC (nowIso's format) -
+  // reconstruct an ISO string to compare against Telegram's 48h delete
+  // window (plan §5.4 step 1).
+  const createdMs = Date.parse(`${row.created_at.replace(" ", "T")}Z`);
+  const ageHours = (Date.now() - createdMs) / 3600000;
+  if (Number.isFinite(ageHours) && ageHours > 48) return err("৪৮ ঘন্টার বেশি পুরনো মেসেজ ডিলিট করা যায় না (টেলিগ্রামের লিমিট)");
+
+  const result = await deleteMessage(row.bot_token, row.chat_id, row.outbound_message_id);
+  // Marked deleted locally regardless of Telegram's exact outcome (already
+  // deleted / chat gone, etc. all land at the same end state) - see plan
+  // §5.4 step 4.
+  await env.DB.prepare("UPDATE telegram_messages SET deleted_at = ? WHERE id = ?").bind(nowIso(), id).run();
+  return ok({ deleted: true, telegramOk: result.ok, telegramDescription: result.description || null });
 }

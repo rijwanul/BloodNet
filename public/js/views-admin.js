@@ -11,6 +11,8 @@ const ADMIN_NAV_ITEMS = [
   ["/admin/site-settings", "settings-2", "সাইট সেটিংস"],
   ["/admin/multisite-branding", "globe", "মাল্টিসাইট ব্র্যান্ডিং"],
   ["/admin/locations", "map-pin", "লোকেশন"],
+  ["/admin/telegram-bots", "bot", "বটস"],
+  ["/admin/telegram-log", "message-circle", "টেলিগ্রাম লগ"],
   ["/admin/help", "help-circle", "সহায়িকা"],
 ];
 
@@ -486,6 +488,180 @@ ViewsAdmin.externalSources = async function (view) {
     catch (e) { toast(e.message); }
   };
   content.appendChild(addCard);
+};
+
+// -------------------------------------------------------------- TELEGRAM BOTS
+ViewsAdmin.telegramBots = async function (view) {
+  const content = adminPage(view, "টেলিগ্রাম বটস", "/admin/telegram-bots");
+
+  content.appendChild(h("div", { class: "banner", style: "margin-bottom:12px" },
+    "নতুন বট যোগ করার আগে @BotFather দিয়ে ম্যানুয়ালি করে নিন: Privacy Mode বন্ধ (গ্রুপে মেনশন ছাড়াই রিপ্লাইয়ের জন্য) ও Guest Mode চালু (বট গ্রুপে অ্যাড না করেই মেনশন করে ব্যবহারের জন্য)। এই সেটিংস এই প্যানেল থেকে করা যায় না - শুধু টোকেন/ওয়েবহুক/অন-অফ এখান থেকে ম্যানেজ হয়।"
+  ));
+
+  const listArea = h("div");
+
+  function openBotForm(existing) {
+    const nameF = h("input", { type: "text", placeholder: "বটের নাম" });
+    if (existing) nameF.value = existing.name;
+    const tokenWrap = passwordField(existing ? "রাখতে চাইলে খালি রাখুন" : "টেলিগ্রাম বট এপিআই কী");
+    const tokenF = tokenWrap.querySelector("input");
+    const dmF = h("input", { type: "checkbox" }); dmF.checked = existing ? !!existing.enabledDm : true;
+    const groupsF = h("input", { type: "checkbox" }); groupsF.checked = existing ? !!existing.enabledGroups : true;
+
+    const body = h("div", { class: "stack" }, [
+      h("div", { class: "field" }, [h("label", {}, "বটের নাম"), nameF]),
+      h("div", { class: "field" }, [h("label", {}, "টেলিগ্রাম বট এপিআই কী"), tokenWrap]),
+      h("div", { class: "row", style: "gap:18px;margin-top:6px" }, [
+        h("label", { class: "row", style: "gap:6px;align-items:center" }, [dmF, "পার্সোনাল ডিএম"]),
+        h("label", { class: "row", style: "gap:6px;align-items:center" }, [groupsF, "গ্রুপস"]),
+      ]),
+    ]);
+
+    const saveBtn = h("button", { class: "btn btn-primary" }, "সংরক্ষণ");
+    const cancelBtn = h("button", { class: "btn btn-outline" }, "বাতিল");
+    openModal({ title: existing ? "বট এডিট" : "নতুন বট", body, actions: [cancelBtn, saveBtn] });
+    cancelBtn.onclick = closeModal;
+    enterSubmits([nameF, tokenF], saveBtn);
+    saveBtn.onclick = async () => {
+      saveBtn.disabled = true;
+      try {
+        const payload = { name: nameF.value, botToken: tokenF.value, enabledDm: dmF.checked, enabledGroups: groupsF.checked };
+        if (existing) await API.put(`/api/admin/telegram-bots/${existing.id}`, payload);
+        else await API.post("/api/admin/telegram-bots", payload);
+        toast(existing ? "আপডেট হয়েছে" : "যোগ হয়েছে");
+        closeModal();
+        load();
+      } catch (e) {
+        toast(e.message);
+      } finally {
+        saveBtn.disabled = false;
+      }
+    };
+  }
+
+  async function load() {
+    listArea.innerHTML = "";
+    setLoading(listArea);
+    const { bots } = await API.get("/api/admin/telegram-bots");
+    listArea.innerHTML = "";
+    if (!bots.length) { listArea.appendChild(h("p", { class: "muted" }, "কোনো বট যোগ করা হয়নি")); return; }
+    bots.forEach((b) => {
+      const dmToggle = h("input", { type: "checkbox" }); dmToggle.checked = !!b.enabledDm;
+      const groupsToggle = h("input", { type: "checkbox" }); groupsToggle.checked = !!b.enabledGroups;
+      const activeToggle = h("input", { type: "checkbox" }); activeToggle.checked = !!b.isActive;
+      wireInstantToggle(dmToggle, (body) => API.put(`/api/admin/telegram-bots/${b.id}`, body), "enabledDm");
+      wireInstantToggle(groupsToggle, (body) => API.put(`/api/admin/telegram-bots/${b.id}`, body), "enabledGroups");
+      wireInstantToggle(activeToggle, (body) => API.put(`/api/admin/telegram-bots/${b.id}`, body), "isActive");
+
+      listArea.appendChild(h("div", { class: "card stack" }, [
+        h("div", { class: "row", style: "justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px" }, [
+          h("div", {}, [
+            h("strong", {}, b.name),
+            h("div", { class: "small muted" }, `@${b.botUsername || "?"} · ${b.tokenMasked}`),
+          ]),
+          h("div", { class: "btn-row" }, [
+            h("button", { class: "btn btn-sm btn-outline", onclick: () => openBotForm(b) }, "এডিট"),
+            h("button", { class: "btn btn-sm btn-danger", onclick: async () => {
+              const sure = await confirmModal(`"${b.name}" বটটি ডিলিট করবেন? এটি টেলিগ্রাম থেকেও আনরেজিস্টার হয়ে যাবে।`);
+              if (sure) { await API.del(`/api/admin/telegram-bots/${b.id}`); toast("ডিলিট হয়েছে"); load(); }
+            } }, "ডিলিট"),
+          ]),
+        ]),
+        h("div", { class: "row", style: "gap:18px;flex-wrap:wrap" }, [
+          h("label", { class: "row", style: "gap:6px;align-items:center" }, [dmToggle, "পার্সোনাল ডিএম"]),
+          h("label", { class: "row", style: "gap:6px;align-items:center" }, [groupsToggle, "গ্রুপস"]),
+          h("label", { class: "row", style: "gap:6px;align-items:center" }, [activeToggle, "একটিভ"]),
+        ]),
+      ]));
+    });
+  }
+
+  const addBtn = h("button", { class: "btn btn-primary", style: "margin-bottom:12px" }, "+ নতুন বট");
+  addBtn.onclick = () => openBotForm(null);
+  content.appendChild(addBtn);
+  content.appendChild(listArea);
+  await load();
+};
+
+// -------------------------------------------------------------- TELEGRAM LOG
+ViewsAdmin.telegramLog = async function (view) {
+  const content = adminPage(view, "টেলিগ্রাম লগ", "/admin/telegram-log");
+
+  const listArea = h("div");
+  content.appendChild(listArea);
+  const pagerArea = h("div", { class: "row", style: "justify-content:center;gap:10px;margin-top:12px" });
+  content.appendChild(pagerArea);
+
+  const TIER_LABELS = {
+    group_button: "গ্রুপ · বাটন", group_plain_url: "গ্রুপ · লিংক", group_delinked_url: "গ্রুপ · টেক্সট",
+    summary_button: "সামারি · বাটন", summary_plain_url: "সামারি · লিংক", summary_delinked_url: "সামারি · টেক্সট",
+    zero_donor_links: "শূন্য ডোনার · লিংক", zero_donor_delinked: "শূন্য ডোনার · টেক্সট",
+    usage_hint: "ইউজেস হিন্ট", none: "কোনো রিপ্লাই না",
+  };
+  const TRIGGER_LABELS = {
+    command: "কমান্ড", mention: "মেনশন", freeform: "ফ্রিফর্ম", guest_mention: "গেস্ট মেনশন", reply_fallback: "প্যারেন্ট রিপ্লাই",
+  };
+
+  async function load(page = 1) {
+    listArea.innerHTML = "";
+    setLoading(listArea);
+    const { entries, totalPages, total } = await API.get(`/api/admin/telegram-messages?page=${page}`);
+    listArea.innerHTML = "";
+    if (!entries.length) { listArea.appendChild(h("p", { class: "muted" }, "কোনো লগ পাওয়া যায়নি")); pagerArea.innerHTML = ""; return; }
+
+    entries.forEach((e) => {
+      const expandBtn = h("button", { class: "btn btn-sm btn-outline" }, "দেখুন");
+      const deleteBtn = e.outbound_message_id && !e.deleted_at
+        ? h("button", { class: "btn btn-sm btn-danger", onclick: async () => {
+            const sure = await confirmModal("টেলিগ্রামে পাঠানো এই রিপ্লাইটি ডিলিট করবেন?");
+            if (!sure) return;
+            try { await API.del(`/api/admin/telegram-messages/${e.id}`); toast("ডিলিট হয়েছে"); load(page); }
+            catch (err) { toast(err.message); }
+          } }, "রিপ্লাই মুছুন")
+        : null;
+
+      const row = h("div", { class: "card stack" }, [
+        h("div", { class: "row", style: "justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px" }, [
+          h("div", {}, [
+            h("div", { class: "small muted" }, bnDateTime(e.created_at)),
+            h("div", {}, [
+              h("strong", {}, e.bot_name || "(বট ডিলিট করা হয়েছে)"),
+              " · ",
+              h("span", { class: "small muted" }, e.chat_title || (e.chat_type === "private" ? "ব্যক্তিগত DM" : e.chat_type)),
+            ]),
+            h("div", { class: "small muted" }, `${e.from_display_name || "?"}${e.from_username ? " (@" + e.from_username + ")" : ""}`),
+          ]),
+          h("div", { class: "btn-row" }, [expandBtn, deleteBtn].filter(Boolean)),
+        ]),
+        h("div", { class: "row", style: "gap:8px;flex-wrap:wrap" }, [
+          h("span", { class: "badge badge-bg" }, TRIGGER_LABELS[e.trigger_type] || e.trigger_type),
+          e.matched_blood_group ? h("span", { class: "badge badge-bg" }, e.matched_blood_group) : null,
+          h("span", { class: "badge badge-bg" }, TIER_LABELS[e.reply_tier] || e.reply_tier || "none"),
+          e.deleted_at ? h("span", { class: "badge badge-bg", style: "color:var(--primary)" }, "রিপ্লাই ডিলিট করা হয়েছে") : null,
+        ].filter(Boolean)),
+      ]);
+
+      const detail = h("div", { class: "small", style: "display:none;white-space:pre-wrap;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)" }, [
+        h("div", {}, [h("strong", {}, "মেসেজ: "), e.message_text]),
+        e.reply_text ? h("div", { style: "margin-top:6px" }, [h("strong", {}, "রিপ্লাই: "), e.reply_text]) : null,
+      ].filter(Boolean));
+      expandBtn.onclick = () => { detail.style.display = detail.style.display === "none" ? "block" : "none"; };
+      row.appendChild(detail);
+
+      listArea.appendChild(row);
+    });
+
+    pagerArea.innerHTML = "";
+    if (totalPages > 1) {
+      const prevBtn = h("button", { class: "btn btn-sm btn-outline", disabled: page <= 1 }, "আগের");
+      const pageLabel = h("span", { class: "small muted" }, `${toBnDigits(page)} / ${toBnDigits(totalPages)} (মোট ${toBnDigits(total)})`);
+      const nextBtn = h("button", { class: "btn btn-sm btn-outline", disabled: page >= totalPages }, "পরের");
+      prevBtn.onclick = () => load(page - 1);
+      nextBtn.onclick = () => load(page + 1);
+      pagerArea.appendChild(prevBtn); pagerArea.appendChild(pageLabel); pagerArea.appendChild(nextBtn);
+    }
+  }
+  await load(1);
 };
 
 // -------------------------------------------------------------- ACTIVITY LOG

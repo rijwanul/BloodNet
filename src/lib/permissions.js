@@ -10,6 +10,7 @@ export const PERMISSIONS = [
   { key: "manage_external_sources", label: "এক্সটার্নাল সোর্সেস" },
   { key: "view_activity_log", label: "এক্টিভিটি লগ দেখা" },
   { key: "manage_site_settings", label: "সাইট সেটিংস (টাইটেল, লোগো, থিম, ওয়েলকাম মেসেজ ইত্যাদি)" },
+  { key: "manage_telegram_bots", label: "টেলিগ্রাম বটস ও লগ" },
 ];
 
 export function hasPermission(user, key) {

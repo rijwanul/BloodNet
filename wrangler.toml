@@ -32,3 +32,8 @@ crons = ["0 * * * *"]
 [vars]
 # Non-secret build-time constants (safe defaults, can be overridden per environment)
 ENVIRONMENT = "production"
+# Used to build Telegram bot reply links (?bg=.../seek) and to register each
+# bot's webhook URL (POST /api/telegram/webhook/:botId) - never derive the
+# domain from a webhook request's own origin, it has none the way a browser
+# page load does. Set this to the real production domain, no trailing slash.
+PUBLIC_SEEK_BASE_URL = "https://bn2.bloodbag.workers.dev"

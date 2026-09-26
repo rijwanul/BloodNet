@@ -1,10 +1,12 @@
 import { err, isValidBloodGroup } from "./lib/util.js";
+import { normalizeBloodGroupParam } from "./lib/blood-group.js";
 import * as auth from "./handlers/auth.js";
 import * as seek from "./handlers/seek.js";
 import * as donor from "./handlers/donor.js";
 import * as profile from "./handlers/profile.js";
 import * as calls from "./handlers/calls.js";
 import * as admin from "./handlers/admin.js";
+import * as telegram from "./handlers/telegram.js";
 import { getBrandForHostname } from "./handlers/admin.js";
 import { getSettings } from "./lib/settings.js";
 import { runDonationReminderSweep, runActivityLogAutoPurge, runSmsDailyReset, runEligibilityReopenSweep, runEligibilitySnoozeWakeSweep } from "./lib/scheduled.js";
@@ -190,26 +192,10 @@ function toBnDigits(n) {
   return String(n).replace(/[0-9]/g, (d) => BN_DIGITS[+d]);
 }
 
-// A literal "+" typed in a URL's query string (e.g. .../seek?bg=A+, exactly
-// how someone would naturally write or share it) is NOT the same as an
-// encoded "%2B" - an unencoded "+" decodes to a space, so
-// URLSearchParams hands back "A " (trailing space), not "A+". Also
-// accepts spelled-out word suffixes as an alternative to the symbol -
-// positive/pos -> "+", negative/neg -> "-" (case-insensitive), e.g.
-// ?bg=Apositive, ?bg=Apos, ?bg=Anegative, ?bg=Aneg. Mirrors the same
-// normalization in views-public.js's normalizeBloodGroupParam, since both
-// need to tolerate the same hand-typed link.
-const BLOOD_GROUP_WORD_SUFFIXES = [["POSITIVE", "+"], ["NEGATIVE", "-"], ["POS", "+"], ["NEG", "-"], ["P", "+"], ["N", "-"]];
-function normalizeBloodGroupParam(raw) {
-  if (!raw) return null;
-  let v = raw.trim();
-  if (raw.endsWith(" ") && !v.endsWith("+") && !v.endsWith("-")) v += "+";
-  v = v.toUpperCase();
-  for (const [word, symbol] of BLOOD_GROUP_WORD_SUFFIXES) {
-    if (v.endsWith(word)) { v = v.slice(0, -word.length) + symbol; break; }
-  }
-  return v;
-}
+// normalizeBloodGroupParam is now imported from ./lib/blood-group.js (the
+// single shared copy also used by src/handlers/telegram.js) instead of
+// being duplicated here - see that file's header comment for why
+// public/js/views-public.js still keeps its own separate copy.
 
 // Formats "now" in Bangladesh local time as e.g. "11:53pm, Sep 23, 2026" -
 // matches the style used in the seek-link preview description below.
@@ -312,6 +298,20 @@ async function routeApi(request, env, path) {
 
   // ---- PUBLIC SETTINGS (site branding, used by every page) ----
   if (path === "/api/settings/public" && method === "GET") return admin.handlePublicSettings(request, env);
+
+  // ---- TELEGRAM BOT ----
+  // :botId is this app's own D1 row id for the bot (see telegram_bots in
+  // schema.sql), never the Telegram bot token itself - see setWebhook in
+  // handleTelegramBotSave (admin.js) for where this URL is registered.
+  if (seg[1] === "telegram" && seg[2] === "webhook" && seg[3] && method === "POST") return telegram.handleTelegramWebhook(request, env, seg[3]);
+
+  if (path === "/api/admin/telegram-bots" && method === "GET") return admin.handleTelegramBotsList(request, env);
+  if (path === "/api/admin/telegram-bots" && method === "POST") return admin.handleTelegramBotSave(request, env);
+  if (seg[2] === "telegram-bots" && seg[3] && method === "PUT") return admin.handleTelegramBotSave(request, env, seg[3]);
+  if (seg[2] === "telegram-bots" && seg[3] && method === "DELETE") return admin.handleTelegramBotDelete(request, env, seg[3]);
+
+  if (path === "/api/admin/telegram-messages" && method === "GET") return admin.handleTelegramMessagesList(request, env);
+  if (seg[2] === "telegram-messages" && seg[3] && method === "DELETE") return admin.handleTelegramMessageDelete(request, env, seg[3]);
 
   // ---- ADMIN ----
   if (path === "/api/admin/analytics" && method === "GET") return admin.handleAnalytics(request, env);

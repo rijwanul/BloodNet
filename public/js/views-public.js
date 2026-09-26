@@ -201,6 +201,13 @@ const SEEK_BLOOD_GROUPS = ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"];
 // e.g. ?bg=Apositive, ?bg=Apos, ?bg=Anegative, ?bg=Aneg all resolve the
 // same as ?bg=A+ / ?bg=A-. Checked longest-suffix-first so "POSITIVE"
 // isn't mistaken for ending in "POS" before the fuller word is tried.
+//
+// KEEP IN SYNC: src/lib/blood-group.js has the Worker-side copy of this
+// same function (used by src/worker.js and src/handlers/telegram.js). This
+// file is a plain browser <script> (see public/index.html), not an ES
+// module, and this app has no bundler/build step, so it can't import that
+// src/lib module - hence the verbatim duplication. If you change this
+// function's behavior, mirror the change there too.
 const BLOOD_GROUP_WORD_SUFFIXES = [["POSITIVE", "+"], ["NEGATIVE", "-"], ["POS", "+"], ["NEG", "-"], ["P", "+"], ["N", "-"]];
 function normalizeBloodGroupParam(raw) {
   if (!raw) return null;
