@@ -4,7 +4,7 @@ import { getCurrentUser, clearSessionCookie } from "../lib/authctx.js";
 import { logActivity } from "../lib/activity.js";
 import { donorbdCheckAvailability, donorbdNewEntry, donorbdDeleteEntry } from "../lib/donorbd.js";
 import { uploadToImgbb } from "../lib/imgbb.js";
-import { publicCallHistoryFor } from "./calls.js";
+import { receivedCallsSummaryFor } from "./calls.js";
 
 // Each visibility-controllable field has its own allowed value set:
 //  - "patients_only" means "visible only while this donor is being actively
@@ -483,7 +483,7 @@ export async function handlePublicProfile(request, env, slug) {
   let calls = [];
   if (show("call_history_tab")) {
     const settings = await getSettings(env.DB);
-    calls = await publicCallHistoryFor(env.DB, user.id, settings);
+    calls = await receivedCallsSummaryFor(env.DB, user.id, settings);
   }
 
   return ok({
@@ -518,7 +518,3 @@ export async function handlePublicProfile(request, env, slug) {
   });
 }
 
-// Shared by the public profile's call-history tab - deliberately makes NO
-// reference to "আপনি" (you) since this is rendered for third-party viewers
-// too; the raw status is shown unmodified. Implementation lives in calls.js.
-export { publicCallHistoryFor } from "./calls.js";
