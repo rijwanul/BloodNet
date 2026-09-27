@@ -514,7 +514,9 @@ function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
     }, 1000);
   };
 
-  box.appendChild(h("p", { class: "center small", style: "margin-top:14px" },
+  box.appendChild(h("p", { class: "center small muted", style: "margin-top:14px" },
+    "এই ডোনারকে কল করার পর ষ্ট্যাটাস জানিয়ে আরো ডোনার থাকলে, একে একে তাদের নাম্বার দেখতে পাবেন।"));
+  box.appendChild(h("p", { class: "center small" },
     h("a", { href: "#", onclick: (e) => { e.preventDefault(); renderBloodGroupStep(document.getElementById("view")); } }, "আবার শুরু")));
 }
 
@@ -533,6 +535,8 @@ function renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, wha
     row.appendChild(h("button", { class: "btn btn-outline", onclick: () => handleCallStatus(statusBox, box, donor, bloodGroup, opt.key, callBtn, whatsappBtn) }, opt.label));
   });
   statusBox.appendChild(row);
+  statusBox.appendChild(h("p", { class: "small muted", style: "margin-top:10px" },
+    "আপনার প্রদত্ত ষ্ট্যাটাস এর মাধ্যমে সিদ্ধান্ত নেয়া হবে এই ডোনারের তথ্য অন্যান্য সিকারদের কাছে দেখানো হবে কি না"));
 }
 
 async function handleCallStatus(statusBox, box, donor, bloodGroup, status, callBtn, whatsappBtn) {
@@ -707,10 +711,27 @@ ViewsPublic.publicProfile = async function (view, slug) {
   if (profile.callHistoryVisible) {
     const callContent = h("div", { class: "stack" });
     const calls = profile.calls || [];
-    if (!calls.length) callContent.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
-    calls.forEach((c) => callContent.appendChild(h("div", { class: "list-item" }, h("span", {}, [
-      personLink(c.personLabel, c.slug), " " + c.suffixText,
-    ]))));
+    if (!calls.length) {
+      callContent.appendChild(h("p", { class: "muted" }, "কোনো কল হিষ্ট্রি নেই"));
+    } else {
+      // Same caption/table format as the owner's own profile calls tab
+      // (renderProfileCallsTab in views-account.js) - profile.calls is now
+      // sourced from the same receivedCallsSummaryFor shape on the backend
+      // (capped at 5, requesterLabel/requesterSlug/statusPhrase/createdAt),
+      // just without the aggregate counters card shown on the owner's side.
+      callContent.appendChild(h("p", { class: "muted small" }, "প্রোফাইল হোল্ডারকে করা সর্বশেষ ৫টি কল..."));
+      const table = h("table", { class: "activity-log-table profile-calls-table" });
+      table.appendChild(h("thead", {}, h("tr", {}, [h("th", {}, "কল করেছিলো"), h("th", {}, "ষ্ট্যাটাস")])));
+      const tbody = h("tbody");
+      calls.forEach((c) => {
+        tbody.appendChild(h("tr", {}, [
+          h("td", {}, [personLink(c.requesterLabel, c.requesterSlug), h("div", { class: "small muted" }, bnDateTimeLong(c.createdAt))]),
+          h("td", {}, c.statusPhrase),
+        ]));
+      });
+      table.appendChild(tbody);
+      callContent.appendChild(table);
+    }
     sections.push({ key: "calls", label: "কল হিষ্ট্রি", content: callContent });
   }
 
