@@ -108,31 +108,16 @@ function personLabelWithNumber(username, mobile, settings) {
   return masked;
 }
 
-// Used by the public profile page's own call-history tab (third-party
-// viewer) - only calls RECEIVED by this donor, never calls they placed to
-// others (a visitor to a donor's profile has no business seeing who that
-// donor called elsewhere).
-export async function publicCallHistoryFor(db, userId, settings) {
-  const { results } = await db
-    .prepare(
-      `SELECT c.status, c.cannot_reason, c.created_at, u.mobile as requester_mobile, u.username_display as requester_username, u.username_slug as requester_slug, u.id as requester_id
-       FROM calls c JOIN users u ON u.id = c.requester_id
-       WHERE c.donor_id = ? ORDER BY c.created_at DESC LIMIT 100`
-    )
-    .bind(userId)
-    .all();
-  return results.map((r) => ({
-    requesterId: r.requester_id,
-    personLabel: personLabelWithNumber(r.requester_username, r.requester_mobile, settings),
-    slug: r.requester_slug || null,
-    suffixText: `কল করেছিলো। ষ্ট্যাটাস: ${statusLabel(r.status, r.cannot_reason)}`,
-    createdAt: r.created_at,
-  }));
-}
-
-// Profile tab's own "calls" section: RECEIVED calls only (as a donor),
-// newest first, capped at 5 - a compact recent-activity summary rather
-// than the full history (which lives on the site-wide /calls page).
+// "Calls" tab data, RECEIVED calls only (as a donor), newest first, capped
+// at 5 - a compact recent-activity summary rather than the full history
+// (which lives on the site-wide /calls page, own-account only). Shared by
+// both the owner's own profile tab (via handleReceivedCallsSummary, which
+// adds the aggregate counters above it) and the public profile's calls tab
+// (handleDonorProfile in profile.js) - both render the exact same
+// caller/status table from this same shape, just without the aggregate
+// counters on the public side. Only ever calls RECEIVED by this donor are
+// returned, never calls they placed to others - a visitor to a donor's
+// public profile has no business seeing who that donor called elsewhere.
 export async function receivedCallsSummaryFor(db, userId, settings) {
   const { results } = await db
     .prepare(
