@@ -39,6 +39,7 @@ body {
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
+  min-height: 100dvh; /* see #app's comment below - same reasoning */
 }
 :lang(bn), .bn { font-family: var(--font-bn); }
 h1, h2, h3, h4 { font-family: var(--font-bn); font-weight: 700; margin: 0 0 0.4em; color: var(--ink); }
@@ -49,7 +50,26 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 :focus-visible { outline: 2.5px solid var(--primary); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; } }
 
-#app { max-width: var(--max-w); margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; padding-bottom: 40px; }
+#app {
+  max-width: var(--max-w); margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; padding-bottom: 40px;
+  /* Static 100vh is measured against the viewport as it is on load, but on
+     Android Chrome the address bar collapses as you scroll, which changes
+     the REAL viewport height mid-scroll. Right near the bottom, the browser
+     re-measures the page's true scrollable height against the now-smaller
+     toolbar-collapsed viewport, finds the current scroll position now
+     exceeds that new max, and clamps it back up - that clamp is the
+     "springs back like a spring" bounce reported at the end of the page.
+     100dvh tracks the live viewport instead, so this max never suddenly
+     shrinks out from under an in-progress scroll. Kept 100vh above it as a
+     fallback for browsers without dvh support (which just ignore this line). */
+  min-height: 100dvh;
+}
+html, body {
+  /* Stops any nested scrollable element (a modal, a horizontal tab strip)
+     from chaining its own overscroll into the page itself, which can
+     compound the bounce above into something more visible near an edge. */
+  overscroll-behavior-y: contain;
+}
 @media (min-width: 900px) { #app { max-width: 720px; } }
 
 /* ---------- top bar ---------- */
@@ -378,4 +398,4 @@ details[open] > .stat-see-more-toggle::before { transform: rotate(90deg); }
   .admin-nav a { display: flex; align-items: center; gap: 8px; justify-content: flex-start; }
   .admin-content { flex: 1; min-width: 0; }
   .stat-grid { grid-template-columns: repeat(3, 1fr); }
-}
+                            }
