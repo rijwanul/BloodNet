@@ -41,6 +41,23 @@ ViewsAccount.quick = async function (view) {
   }
 };
 
+// Cookie that keeps the "কতক্ষণের জন্য বন্ধ রাখতে চান?" options open after the
+// switch is turned off until one is chosen (survives refresh). Tied to the
+// user id so another account on the same browser never sees it. Cleared on
+// any choice, on turning ON, and on logout (see doLogout in app.js).
+const SNOOZE_PENDING_COOKIE = "bnetv2_snooze_pending";
+function snoozePendingGet() {
+  const m = document.cookie.match(new RegExp("(?:^|; )" + SNOOZE_PENDING_COOKIE + "=([^;]*)"));
+  return !!(m && APP.user && decodeURIComponent(m[1]) === String(APP.user.id));
+}
+function snoozePendingSet() {
+  if (!APP.user) return;
+  document.cookie = `${SNOOZE_PENDING_COOKIE}=${encodeURIComponent(APP.user.id)}; path=/; max-age=${60 * 60 * 24 * 30}; SameSite=Lax`;
+}
+function snoozePendingClear() {
+  document.cookie = `${SNOOZE_PENDING_COOKIE}=; path=/; max-age=0; SameSite=Lax`;
+}
+
 async function renderEligibilityToggleSection(view, status) {
   const { eligibilityStatus, snoozeUntil, snoozeReason } = status;
   // card--on / card--off give the whole card a soft green / red tint and
@@ -67,6 +84,14 @@ async function renderEligibilityToggleSection(view, status) {
   if (eligibilityStatus === "snoozed" && snoozeUntil) {
     snoozeArea.appendChild(renderCountdown(snoozeUntil, snoozeReason));
   }
+  // Switch was turned off earlier but no duration picked yet: the server
+  // already has it OFF indefinitely, so just re-show the options. Any other
+  // status means the choice was made (or it was turned on elsewhere).
+  if (eligibilityStatus === "off" && snoozePendingGet()) {
+    renderSnoozeOptions(snoozeArea, view);
+  } else {
+    snoozePendingClear();
+  }
 
   // Appended to the card AFTER snoozeArea, so it naturally sits at the
   // true bottom of the section regardless of whether snoozeArea ends up
@@ -85,18 +110,31 @@ async function renderEligibilityToggleSection(view, status) {
   ]));
 
   cb.onchange = async () => {
-    // Turning ON is optimistic; turning OFF drops the green and waits for
-    // the snooze/off choice (which re-renders the card with the right class).
+    // Turning ON is optimistic. Turning OFF immediately saves the status as
+    // OFF indefinitely, then shows the duration options; the cookie keeps
+    // them open until one is chosen.
     card.classList.toggle("card--on", cb.checked);
     card.classList.remove("card--off");
     if (cb.checked) {
       try {
         await API.post("/api/donor/eligibility", { action: "on" });
+        snoozePendingClear();
         toast("এলিজিবিলিটি চালু হয়েছে");
         ViewsAccount.quick(view);
       } catch (e) { toast(e.message); cb.checked = false; card.classList.remove("card--on"); card.classList.toggle("card--off", eligibilityStatus === "off"); }
     } else {
-      renderSnoozeOptions(snoozeArea, view);
+      try {
+        await API.post("/api/donor/eligibility", { action: "off", snoozeType: "indefinite" });
+        snoozePendingSet();
+        card.classList.add("card--off");
+        badge.className = "badge badge-off";
+        badge.textContent = "বন্ধ";
+        renderSnoozeOptions(snoozeArea, view);
+      } catch (e) {
+        toast(e.message);
+        cb.checked = true;
+        card.classList.add("card--on");
+      }
     }
   };
 }
@@ -295,6 +333,13 @@ function renderSnoozeOptions(container, view) {
 }
 
 async function onSnoozeChoice(key, view) {
+  // Already OFF indefinitely on the server; that choice needs no API call.
+  if (key === "indefinite") {
+    snoozePendingClear();
+    toast("আপডেট হয়েছে");
+    ViewsAccount.quick(view);
+    return;
+  }
   if (key === "until_date") {
     const dateInput = h("input", { type: "date", min: todayIsoDate() });
     enforceDateBound(dateInput, todayIsoDate(), "min", "অতীতের তারিখ নির্বাচন করা যাবে না");
@@ -316,6 +361,7 @@ async function onSnoozeChoice(key, view) {
 async function submitSnooze(key, snoozeDate, view) {
   try {
     await API.post("/api/donor/eligibility", { action: "off", snoozeType: key, snoozeDate });
+    snoozePendingClear();
     toast("আপডেট হয়েছে");
     ViewsAccount.quick(view);
   } catch (e) { toast(e.message); }

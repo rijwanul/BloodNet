@@ -59,7 +59,7 @@ function renderTopbar() {
   const settings = APP.settings || {};
   const logo = h("a", { href: "/", "data-link": "", class: "topbar__logo" }, [
     settings.logoUrl ? h("img", { src: settings.logoUrl, alt: "" }) : icon("droplet"),
-    settings.siteTitle || "BloodNet v2",
+    settings.siteTitle || "Blood Network",
   ]);
   bar.appendChild(logo);
   bar.appendChild(h("div", { class: "topbar__spacer" }));
@@ -167,6 +167,7 @@ async function doLogout() {
   // simply issues a fresh one regardless.
   if (_loggingOut) return;
   _loggingOut = true;
+  document.cookie = "bnetv2_snooze_pending=; path=/; max-age=0; SameSite=Lax";
   APP.user = null;
   renderTopbar();
   renderBottomNav("/");

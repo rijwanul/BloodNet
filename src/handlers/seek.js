@@ -95,6 +95,16 @@ async function hasCallStarted(db, requesterId, donorId) {
   return !!row;
 }
 
+// Same as donorPublicShape, plus the real number - but ONLY when this
+// requester has already revealed it for this donor (a calls row exists), so
+// a refresh can show the same number again without a new reveal/fetch.
+async function donorShapeForRequester(db, requesterId, d, settings) {
+  const shape = donorPublicShape(d, settings);
+  const alreadyCalled = await hasCallStarted(db, requesterId, d.id);
+  if (alreadyCalled) shape.mobile = d.mobile;
+  return { donor: shape, alreadyCalled };
+}
+
 export async function handleSeekLock(request, env) {
   const requester = await getCurrentUser(request, env);
   if (!requester) return err("রক্তদাতা খুঁজতে লগইন প্রয়োজন", 401);
@@ -122,7 +132,7 @@ export async function handleSeekLock(request, env) {
       .prepare("SELECT u.*, (SELECT COUNT(*) FROM donations WHERE user_id = u.id) as explicit_donation_count FROM users u WHERE id = ? AND deleted = 0")
       .bind(existingLock.donorId)
       .first();
-    if (donor) return ok({ donor: donorPublicShape(donor, settings), bloodGroup, alreadyCalled: await hasCallStarted(env.DB, requester.id, existingLock.donorId) });
+    if (donor) return ok({ ...(await donorShapeForRequester(env.DB, requester.id, donor, settings)), bloodGroup });
     await clearLock(env.KV, requester.id, bloodGroup);
   }
 
@@ -333,7 +343,7 @@ async function applyCallStatus(env, requester, donorId, callRowId, isCorrection,
     }),
   ]);
 
-  return ok({ recorded: true });
+  return ok({ recorded: true, callId: callRowId });
 }
 
 export async function handleSeekDonorNumber(request, env) {
@@ -403,7 +413,7 @@ export async function handleSeekState(request, env) {
     .bind(lock.donorId)
     .first();
   if (!donor) return ok({ active: false });
-  return ok({ active: true, donor: donorPublicShape(donor, settings), bloodGroup, lockExpiresAt: lock.expiresAt || null, alreadyCalled: await hasCallStarted(env.DB, requester.id, lock.donorId) });
+  return ok({ active: true, ...(await donorShapeForRequester(env.DB, requester.id, donor, settings)), bloodGroup, lockExpiresAt: lock.expiresAt || null });
 }
 
 export async function handleExternalSources(request, env) {

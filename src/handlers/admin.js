@@ -441,7 +441,7 @@ export async function handleSmsTest(request, env) {
   const settings = await getSettings(env.DB);
   const { sendNotificationSms, fillTemplate } = await import("../lib/sms.js");
   const sample = {
-    siteTitle: settings.site_title || "BloodNet v2",
+    siteTitle: settings.site_title || "Blood Network",
     password: "test1234",
     otp: "123456",
     status: "রক্ত দিতে পারবে না (দূরে আছেন)",

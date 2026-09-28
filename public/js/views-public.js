@@ -354,7 +354,18 @@ function renderBloodGroupStep(view, presetGroup) {
   if (validPreset) selectGroup(validPreset);
 }
 
+// donorId -> calls row id for the CURRENT search session. Once a status is
+// saved the donor's lock is released, so later corrections (from the
+// "পূর্বের ষ্ট্যাটাস ভুল হয়েছে?" link) must target that exact row by id
+// instead of relying on a live lock. Reset whenever a new search starts.
+let SEEK_CALL_IDS = {};
+// The donor that was on screen when the requester tapped "<- পূর্বের ষ্ট্যাটাস
+// ভুল হয়েছে?". Re-shown from memory (no request) when they come back.
+let SEEK_PENDING_NEXT = null;
+
 async function startDonorSearch(view, bloodGroup) {
+  SEEK_CALL_IDS = {};
+  SEEK_PENDING_NEXT = null;
   view.innerHTML = "";
   const box = h("div");
   view.appendChild(box);
@@ -378,7 +389,7 @@ const NOT_CALLED_REASONS = [
   { key: "other", label: "অন্যান্য" },
 ];
 
-async function showNextDonor(box, bloodGroup) {
+async function showNextDonor(box, bloodGroup, prev) {
   box.innerHTML = "";
   setLoading(box);
   let res;
@@ -401,16 +412,50 @@ async function showNextDonor(box, bloodGroup) {
     const list = h("div", { class: "link-list" });
     (res.externalSources || []).forEach((s) => list.appendChild(h("a", { href: s.url, target: "_blank", rel: "noopener" }, s.name)));
     card.appendChild(list);
+    if (prev) card.insertBefore(prevStatusLink(box, bloodGroup, prev, null), card.firstChild);
     box.appendChild(card);
     return;
   }
 
-  renderDonorCard(box, res.donor, bloodGroup, res.alreadyCalled);
+  renderDonorCard(box, res.donor, bloodGroup, res.alreadyCalled, { prev });
 }
 
-function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
+// Returns to the donor that was showing before the requester reopened the
+// previous donor's status - from memory when we have it, else via the server.
+function returnToCurrentDonor(box, bloodGroup, prev) {
+  const cur = SEEK_PENDING_NEXT;
+  SEEK_PENDING_NEXT = null;
+  if (cur) return renderDonorCard(box, cur.donor, bloodGroup, cur.alreadyCalled, { prev });
+  return showNextDonor(box, bloodGroup, prev);
+}
+
+// "<- পূর্বের ষ্ট্যাটাস ভুল হয়েছে?" - top-left link on the next donor's card
+// that reopens the previous donor's status buttons. Never shown for the
+// first donor of a search (no prev).
+function prevStatusLink(box, bloodGroup, prev, cur) {
+  return h("a", {
+    href: "#",
+    class: "donor-card__back",
+    onclick: (e) => {
+      e.preventDefault();
+      SEEK_PENDING_NEXT = cur;
+      renderDonorCard(box, prev.donor, bloodGroup, true, { correction: true, prev });
+    },
+  }, [icon("arrow-left", "small"), " পূর্বের ষ্ট্যাটাস ভুল হয়েছে?"]);
+}
+
+function renderDonorCard(box, donor, bloodGroup, alreadyCalled, opts = {}) {
   box.innerHTML = "";
   const card = h("div", { class: "card donor-card" });
+  if (opts.correction) {
+    // Reopened previous donor: offer a way back to the donor that was showing.
+    card.appendChild(h("a", {
+      href: "#", class: "donor-card__back",
+      onclick: (e) => { e.preventDefault(); returnToCurrentDonor(box, bloodGroup, opts.prev); },
+    }, [icon("arrow-right", "small"), " ফিরে যান"]));
+  } else if (opts.prev) {
+    card.appendChild(prevStatusLink(box, bloodGroup, opts.prev, { donor, alreadyCalled }));
+  }
   card.appendChild(h("img", { class: "donor-card__pic", src: donor.profilePicUrl || pickDefaultAvatar(), alt: "" }));
   card.appendChild(h("div", { class: "donor-card__name" }, personLink(donor.name, donor.username)));
   const meta = donor.totalDonations > 0 ? `${donor.bloodGroup} (${toBnDigits(donor.totalDonations)} বার রক্তদান)` : donor.bloodGroup;
@@ -425,7 +470,7 @@ function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
 
   const callBtn = h("button", { class: "btn btn-primary" }, [icon("phone", "small"), " কল করুন (" + donor.mobileMasked + ")"]);
   const skipBtn = h("button", { class: "btn btn-outline", style: "margin-top:8px" }, [icon("skip-forward", "small"), " স্কিপ করুন"]);
-  const whatsappBtn = h("a", { class: "btn btn-outline", style: "display:none;margin-top:8px", target: "_blank", rel: "noopener" }, [icon("message-square", "small"), " হোয়াটসঅ্যাপে ওপেন করুন"]);
+  const whatsappBtn = h("a", { class: "btn btn-whatsapp", style: "display:none;margin-top:8px", target: "_blank", rel: "noopener" }, [icon("message-square", "small"), " হোয়াটসঅ্যাপে ওপেন করুন"]);
   const statusBox = h("div", { style: "display:none;margin-top:14px" });
   card.appendChild(callBtn);
   card.appendChild(skipBtn);
@@ -467,8 +512,19 @@ function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
     revealed = true;
     callBtn.innerHTML = "";
     callBtn.appendChild(icon("phone", "small"));
-    callBtn.append(" আবার কল করুন");
-    callBtn.dataset.needsNumber = "1";
+    if (donor.mobile) {
+      // Server returns the number again only because this requester already
+      // revealed it for this donor - no new reveal/fetch is needed.
+      callBtn.dataset.mobile = donor.mobile;
+      callBtn.append(" আবার কল করুন (" + donor.mobile + ")");
+      showWhatsappButton(donor.mobile);
+    } else {
+      callBtn.append(" আবার কল করুন");
+      callBtn.dataset.needsNumber = "1";
+      // Corrected donor was never called (skipped/না-করা) so the number was
+      // never revealed and the lock is gone - only the status buttons apply.
+      if (opts.correction) callBtn.style.display = "none";
+    }
     statusBox.dataset.started = "1";
     statusBox.style.display = "block";
     skipBtn.style.display = "none";
@@ -549,15 +605,15 @@ function renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, wha
   statusBox.innerHTML = "";
   statusBox.appendChild(h("p", { class: "small muted" }, "কলের পর ষ্ট্যাটাস জানান:"));
   const options = [
+    { key: "not_called", label: "কল করিনি" },
     { key: "no_answer", label: "কল যাচ্ছে না" },
     { key: "not_picked_up", label: "কল ধরেনি" },
-    { key: "cannot_donate", label: "রক্ত দিতে পারবে না" },
-    { key: "can_donate", label: "রক্ত দিতে পারবে" },
-    { key: "not_called", label: "কল করিনি" },
+    { key: "can_donate", label: "রক্ত দিতে পারবে", tone: "btn-good" },
+    { key: "cannot_donate", label: "রক্ত দিতে পারবে না", tone: "btn-bad" },
   ];
   const row = h("div", { class: "stack" });
   options.forEach((opt) => {
-    row.appendChild(h("button", { class: "btn btn-outline", onclick: () => handleCallStatus(statusBox, box, donor, bloodGroup, opt.key, callBtn, whatsappBtn, skipBtn) }, opt.label));
+    row.appendChild(h("button", { class: "btn btn-outline" + (opt.tone ? " " + opt.tone : ""), onclick: () => handleCallStatus(statusBox, box, donor, bloodGroup, opt.key, callBtn, whatsappBtn, skipBtn) }, opt.label));
   });
   statusBox.appendChild(row);
   statusBox.appendChild(h("p", { class: "small muted", style: "margin-top:10px" },
@@ -568,7 +624,7 @@ async function handleCallStatus(statusBox, box, donor, bloodGroup, status, callB
   if (status === "cannot_donate") {
     statusBox.innerHTML = "";
     const card = h("div", { class: "stack" });
-    card.appendChild(h("h3", {}, "কেন রক্ত দিতে পারবেন না?"));
+    card.appendChild(h("h3", {}, "ডোনার কেন রক্ত দিতে পারবেন না?"));
     CANNOT_REASONS.forEach((r) => {
       card.appendChild(h("button", { class: "btn btn-outline", onclick: () => submitCallStatus(statusBox, box, donor, bloodGroup, status, r.key, callBtn, whatsappBtn, skipBtn) }, r.label));
     });
@@ -622,39 +678,36 @@ function renderSkippedReasons(statusBox, box, donor, bloodGroup, callBtn, whatsa
 }
 
 async function submitCallStatus(statusBox, box, donor, bloodGroup, status, cannotReason, callBtn, whatsappBtn, skipBtn) {
+  let res;
   try {
-    await API.post("/api/seek/call-status", { donorId: donor.id, status, cannotReason });
+    // Known callId => this is a correction of an already-saved status; update
+    // that row in place (the donor's lock was released when it was saved).
+    const payload = { donorId: donor.id, status, cannotReason };
+    if (SEEK_CALL_IDS[donor.id]) payload.callId = SEEK_CALL_IDS[donor.id];
+    res = await API.post("/api/seek/call-status", payload);
   } catch (e) { toast(e.message); return; }
+  if (res && res.callId) SEEK_CALL_IDS[donor.id] = res.callId;
 
-  // Once a status is recorded, the call button, the WhatsApp button, AND
-  // the skip button are all hidden - re-messaging/re-dialing/skipping from
-  // this card is no longer offered unless the requester explicitly says the
-  // status was a mistake and picks again ("ভুল হয়েছে? আবার নির্বাচন করুন"),
-  // which restores all three.
-  if (callBtn) callBtn.style.display = "none";
-  if (whatsappBtn) whatsappBtn.style.display = "none";
-  if (skipBtn) skipBtn.style.display = "none";
-
-  statusBox.innerHTML = "";
-  const resultCard = h("div", { class: "center stack" });
   if (status === "can_donate") {
-    resultCard.appendChild(h("p", {}, "আলহামদুলিল্লাহ। রক্ত ম্যানেজ হয়েছে।"));
-  } else {
-    resultCard.appendChild(h("p", {}, "ষ্ট্যাটাস সংরক্ষণ করা হয়েছে।"));
-    // Mistake correction: let the requester pick a different status for the
-    // same call attempt instead of it being permanent.
-    resultCard.appendChild(h("button", {
-      class: "btn btn-outline",
-      onclick: () => {
-        if (callBtn) callBtn.style.display = "";
-        if (whatsappBtn && whatsappBtn.href) whatsappBtn.style.display = "inline-flex";
-        if (skipBtn && !skipBtn.dataset.callLocked) skipBtn.style.display = "";
-        renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn, skipBtn);
-      },
-    }, "ভুল হয়েছে? আবার নির্বাচন করুন"));
-    resultCard.appendChild(h("button", { class: "btn btn-primary", onclick: () => showNextDonor(box, bloodGroup) }, "পরবর্তী ডোনার দেখুন"));
+    // Blood managed: stay on this card with the confirmation.
+    if (callBtn) callBtn.style.display = "none";
+    if (whatsappBtn) whatsappBtn.style.display = "none";
+    if (skipBtn) skipBtn.style.display = "none";
+    statusBox.innerHTML = "";
+    statusBox.appendChild(h("div", { class: "center stack" }, h("p", {}, "আলহামদুলিল্লাহ। রক্ত ম্যানেজ হয়েছে।")));
+    return;
   }
-  statusBox.appendChild(resultCard);
+
+  // Any other status: straight on to the next donor (no intermediate
+  // screen). The just-finished donor is passed along so the next card can
+  // offer "<- পূর্বের ষ্ট্যাটাস ভুল হয়েছে?".
+  toast("ষ্ট্যাটাস সংরক্ষণ করা হয়েছে");
+  const mobile = (callBtn && callBtn.dataset.mobile) || donor.mobile || null;
+  const prev = { donor: mobile ? { ...donor, mobile } : donor };
+  // If this was a correction of the previous donor, go back to the donor that
+  // was showing (from memory); otherwise load the next one.
+  if (SEEK_PENDING_NEXT) return returnToCurrentDonor(box, bloodGroup, prev);
+  await showNextDonor(box, bloodGroup, prev);
 }
 
 // ------------------------------------------------------------------ JOIN
