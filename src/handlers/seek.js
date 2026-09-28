@@ -106,18 +106,25 @@ async function donorShapeForRequester(db, requesterId, d, settings) {
 }
 
 export async function handleSeekLock(request, env) {
-  const requester = await getCurrentUser(request, env);
+  // getCurrentUser only reads the session cookie/DB row; readJson only reads
+  // the request body stream. Neither touches the other, so they run together
+  // instead of one after another.
+  const [requester, body] = await Promise.all([getCurrentUser(request, env), readJson(request)]);
   if (!requester) return err("রক্তদাতা খুঁজতে লগইন প্রয়োজন", 401);
-  const body = await readJson(request);
   const bloodGroup = body.bloodGroup;
   if (!isValidBloodGroup(bloodGroup)) return err("সঠিক রক্তের গ্রুপ দিন");
 
-  const settings = await getSettings(env.DB);
-  await wakeSnoozedDonors(env.DB);
-  await releaseExpiredLocks(env.DB);
-
+  // Housekeeping (waking snoozed donors, releasing expired locks) is
+  // intentionally SKIPPED here so the very first donor of a search returns
+  // as fast as possible. From the 2nd donor onward this same housekeeping
+  // runs as background work inside /api/seek/prefetch (see below) while the
+  // frontend has already moved on to a donor it prefetched earlier, so it
+  // costs nothing on the critical path there either. The hourly cron job
+  // is the fallback if a requester's whole session only ever sees one donor.
+  // Settings and the existing-lock check are independent (a D1 read and a
+  // KV read), so they run together too.
+  const [settings, existingLock] = await Promise.all([getSettings(env.DB), getLock(env.KV, requester.id, bloodGroup)]);
   const limitMinutes = settingInt(settings, "call_limit_minutes", 15);
-  await pruneOldExclusions(env.DB, requester.id, limitMinutes);
 
   // Re-serve the same donor if this requester already has an active lock
   // FOR THIS BLOOD GROUP specifically - lets a page refresh return to the
@@ -126,18 +133,29 @@ export async function handleSeekLock(request, env) {
   // blood group gets its own independent lock, so a requester who starts
   // an O+ search, backs out, and starts an A+ search gets a genuinely fresh
   // A+ match instead of being stuck with whatever donor O+ had locked.
-  const existingLock = await getLock(env.KV, requester.id, bloodGroup);
+  //
+  // The exclusion prune below doesn't depend on this lookup (or vice versa),
+  // so on a refresh of an existing donor the two overlap instead of the
+  // prune adding a whole extra round trip after the fact.
+  let prunePromise = null;
   if (existingLock) {
-    const donor = await env.DB
-      .prepare("SELECT u.*, (SELECT COUNT(*) FROM donations WHERE user_id = u.id) as explicit_donation_count FROM users u WHERE id = ? AND deleted = 0")
-      .bind(existingLock.donorId)
-      .first();
+    prunePromise = pruneOldExclusions(env.DB, requester.id, limitMinutes);
+    const [donor] = await Promise.all([
+      env.DB.prepare("SELECT u.*, (SELECT COUNT(*) FROM donations WHERE user_id = u.id) as explicit_donation_count FROM users u WHERE id = ? AND deleted = 0").bind(existingLock.donorId).first(),
+      prunePromise,
+    ]);
     if (donor) return ok({ ...(await donorShapeForRequester(env.DB, requester.id, donor, settings)), bloodGroup });
     await clearLock(env.KV, requester.id, bloodGroup);
   }
 
   const limitCount = settingInt(settings, "call_limit_count", 20);
-  const rate = await checkAndBumpRateLimit(env.KV, requester.id, limitCount, limitMinutes);
+  // Prune (if not already kicked off above) and the rate-limit bump don't
+  // depend on each other either - both must finish before the SELECT below,
+  // but neither needs to wait for the other first.
+  const [, rate] = await Promise.all([
+    prunePromise || pruneOldExclusions(env.DB, requester.id, limitMinutes),
+    checkAndBumpRateLimit(env.KV, requester.id, limitCount, limitMinutes),
+  ]);
   if (!rate.allowed) {
     return err(
       `আপনার লিমিট শেষ হয়েছে। আপনি ${limitMinutes} মিনিট এর মধ্যে সর্বোচ্চ ${limitCount} জন ডোনারের সাথে যোগাযোগ করতে পারবেন। অনুগ্রহ করে অপেক্ষা করুন।`,
@@ -174,26 +192,217 @@ export async function handleSeekLock(request, env) {
     // become eligible to be shown again. Clearing the exclusions here means
     // the NEXT /api/seek/lock call for this requester+group starts fresh,
     // rather than waiting on the unrelated call-limit rate-window to expire.
-    await env.DB.prepare("DELETE FROM seek_exclusions WHERE requester_id = ? AND blood_group = ?").bind(requester.id, bloodGroup).run();
-    const { results: sources } = await env.DB.prepare("SELECT name, url FROM external_sources ORDER BY sort_order ASC").all();
+    // Neither of these depends on the other's result.
+    const [, { results: sources }] = await Promise.all([
+      env.DB.prepare("DELETE FROM seek_exclusions WHERE requester_id = ? AND blood_group = ?").bind(requester.id, bloodGroup).run(),
+      env.DB.prepare("SELECT name, url FROM external_sources ORDER BY sort_order ASC").all(),
+    ]);
     return ok({ donor: null, externalSources: sources });
   }
 
   const lockMinutes = settingInt(settings, "donor_lock_minutes", 15);
   const lockExpiresAt = new Date(Date.now() + lockMinutes * 60000).toISOString().replace("T", " ").slice(0, 19);
-  await env.DB
-    .prepare("UPDATE users SET locked_by_requester_id = ?, lock_expires_at = ? WHERE id = ?")
-    .bind(requester.id, lockExpiresAt, donor.id)
-    .run();
-  await setLock(env.KV, requester.id, donor.id, lockMinutes, bloodGroup);
-  await env.DB
-    .prepare("INSERT OR IGNORE INTO seek_exclusions (requester_id, donor_id, blood_group, created_at) VALUES (?, ?, ?, ?)")
-    .bind(requester.id, donor.id, bloodGroup, nowIso())
-    .run();
+  // The lock UPDATE, the KV lock and the exclusion INSERT are three
+  // independent writes - none needs another's result, so they run together
+  // instead of three round trips back to back.
+  await Promise.all([
+    env.DB.prepare("UPDATE users SET locked_by_requester_id = ?, lock_expires_at = ? WHERE id = ?").bind(requester.id, lockExpiresAt, donor.id).run(),
+    setLock(env.KV, requester.id, donor.id, lockMinutes, bloodGroup),
+    env.DB.prepare("INSERT OR IGNORE INTO seek_exclusions (requester_id, donor_id, blood_group, created_at) VALUES (?, ?, ?, ?)").bind(requester.id, donor.id, bloodGroup, nowIso()).run(),
+  ]);
 
   return ok({ donor: donorPublicShape(donor, settings), bloodGroup });
 }
 
+
+// ---------------------------------------------------------------------------
+// Prefetch queue (speeds up the 2nd donor onwards)
+//
+// While a requester is looking at a donor they already hold (locked), the
+// client asks /api/seek/prefetch for the NEXT couple of candidates. These are
+// NOT locked and do NOT count toward the call limit - they are only a short,
+// server-decided list kept in KV (requester + blood group). A candidate only
+// becomes "shown" through /api/seek/claim, which atomically locks the donor,
+// applies the rate limit and records the exclusion, exactly like /lock does.
+// The client never sends ids to exclude and can only claim donors that are in
+// its server-side queue, so it can't page through the donor pool.
+// ---------------------------------------------------------------------------
+const PREFETCH_DEPTH = 2;
+const queueKey = (requesterId, bloodGroup) => `seekq:${requesterId}:${bloodGroup}`;
+
+async function readQueue(kv, requesterId, bloodGroup) {
+  try {
+    const raw = await kv.get(queueKey(requesterId, bloodGroup));
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr.filter((n) => Number.isInteger(n)) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeQueue(kv, requesterId, bloodGroup, ids, ttlMinutes) {
+  const key = queueKey(requesterId, bloodGroup);
+  if (!ids.length) return kv.delete(key);
+  return kv.put(key, JSON.stringify(ids), { expirationTtl: Math.max(60, ttlMinutes * 60) });
+}
+
+// Same eligibility rules /lock uses to pick a donor.
+const ELIGIBLE_SQL = `is_donor = 1 AND blood_group = ? AND eligibility_status = 'on' AND deleted = 0
+  AND id != ?
+  AND (locked_by_requester_id IS NULL OR lock_expires_at <= datetime('now'))
+  AND id NOT IN (SELECT donor_id FROM seek_exclusions WHERE requester_id = ? AND blood_group = ?)`;
+
+// Minimal preview only - enough to draw the name/photo/masked number at once.
+// Address, note and last-donation date arrive with the claim response.
+function donorPreviewShape(d, settings) {
+  return {
+    id: d.id,
+    name: d.name || "নাম প্রদান করেননি",
+    username: d.username_display,
+    profilePicUrl: d.profile_pic_url,
+    bloodGroup: d.blood_group,
+    totalDonations: (d.extra_donation_count || 0) + (d.explicit_donation_count || 0),
+    mobileMasked: maskMobile(d.mobile, settings),
+  };
+}
+
+const DONOR_WITH_COUNT_SQL = "SELECT u.*, (SELECT COUNT(*) FROM donations WHERE user_id = u.id) as explicit_donation_count FROM users u";
+
+export async function handleSeekPrefetch(request, env, ctx) {
+  const requester = await getCurrentUser(request, env);
+  if (!requester) return ok({ candidates: [] });
+  const body = await readJson(request);
+  const bloodGroup = body.bloodGroup;
+  if (!isValidBloodGroup(bloodGroup)) return ok({ candidates: [] });
+
+  // Only while the requester is actually looking at a donor they hold.
+  const lock = await getLock(env.KV, requester.id, bloodGroup);
+  if (!lock) return ok({ candidates: [] });
+
+  // Housekeeping skipped for the 1st donor (handleSeekLock) runs here in the
+  // background: it doesn't block this response (the frontend already has a
+  // donor on screen and is only warming up the next one), but it completes
+  // before the NEXT prefetch/claim call, so a donor who just woke from snooze
+  // or whose lock just expired becomes selectable again within one donor's
+  // worth of browsing, not only on the hourly cron.
+  if (ctx && ctx.waitUntil) {
+    ctx.waitUntil(wakeSnoozedDonors(env.DB));
+    ctx.waitUntil(releaseExpiredLocks(env.DB));
+  }
+
+  // Settings (D1) and the current queue (KV) don't depend on each other.
+  const [settings, queued] = await Promise.all([getSettings(env.DB), readQueue(env.KV, requester.id, bloodGroup)]);
+  const lockMinutes = settingInt(settings, "donor_lock_minutes", 15);
+
+  // 1. Keep queued donors that are still valid (nobody grabbed / switched off).
+  let kept = [];
+  if (queued.length) {
+    const ph = queued.map(() => "?").join(",");
+    const { results } = await env.DB
+      .prepare(`${DONOR_WITH_COUNT_SQL} WHERE ${ELIGIBLE_SQL.replace(/\bid\b/g, "u.id")} AND u.id IN (${ph})`)
+      .bind(bloodGroup, requester.id, requester.id, bloodGroup, ...queued)
+      .all();
+    const byId = new Map(results.map((r) => [r.id, r]));
+    kept = queued.map((id) => byId.get(id)).filter(Boolean);
+  }
+
+  // 2. Top up to PREFETCH_DEPTH with the next donors in the normal order.
+  const need = PREFETCH_DEPTH - kept.length;
+  let fresh = [];
+  if (need > 0) {
+    const exclude = kept.map((d) => d.id);
+    const notIn = exclude.length ? ` AND u.id NOT IN (${exclude.map(() => "?").join(",")})` : "";
+    const { results } = await env.DB
+      .prepare(
+        `${DONOR_WITH_COUNT_SQL} WHERE ${ELIGIBLE_SQL.replace(/\bid\b/g, "u.id")}${notIn}
+         ORDER BY u.call_sort_rank ASC, u.total_calls_received ASC, u.id ASC LIMIT ?`
+      )
+      .bind(bloodGroup, requester.id, requester.id, bloodGroup, ...exclude, need)
+      .all();
+    fresh = results;
+  }
+
+  const all = [...kept, ...fresh];
+  await writeQueue(env.KV, requester.id, bloodGroup, all.map((d) => d.id), lockMinutes);
+  return ok({ candidates: all.map((d) => donorPreviewShape(d, settings)) });
+}
+
+export async function handleSeekClaim(request, env, ctx) {
+  const [requester, body] = await Promise.all([getCurrentUser(request, env), readJson(request)]);
+  if (!requester) return err("রক্তদাতা খুঁজতে লগইন প্রয়োজন", 401);
+  const bloodGroup = body.bloodGroup;
+  const donorId = parseInt(body.donorId, 10);
+  if (!isValidBloodGroup(bloodGroup) || !donorId) return err("সঠিক তথ্য দিন");
+
+  // Same background housekeeping as prefetch (see comment there) - fired
+  // here too since claim can, in principle, be called without a prefetch
+  // immediately before it.
+  if (ctx && ctx.waitUntil) {
+    ctx.waitUntil(wakeSnoozedDonors(env.DB));
+    ctx.waitUntil(releaseExpiredLocks(env.DB));
+  }
+
+  // These three don't depend on each other: the existing-lock check (KV),
+  // settings (D1) and the prefetch queue (KV) are read together instead of
+  // one after another. The rare cost is fetching settings/queue in the
+  // (uncommon) case the existing-lock check ends up short-circuiting anyway.
+  const [existingLock, settings, queued] = await Promise.all([
+    getLock(env.KV, requester.id, bloodGroup),
+    getSettings(env.DB),
+    readQueue(env.KV, requester.id, bloodGroup),
+  ]);
+  // Already holding a donor for this group (e.g. a refresh/duplicate tap)?
+  // Let the normal /lock path re-serve it instead of claiming a second one.
+  if (existingLock) return err("এই গ্রুপে আপনার একটি ডোনার আগে থেকেই আছে", 409, { code: "has_lock" });
+
+  const lockMinutes = settingInt(settings, "donor_lock_minutes", 15);
+
+  // Only donors the server itself queued for this requester can be claimed.
+  if (!queued.includes(donorId)) return err("ডোনার পাওয়া যায়নি", 409, { code: "not_in_queue" });
+  const remaining = queued.filter((id) => id !== donorId);
+
+  // Atomic claim: succeeds only if the donor is still eligible and free.
+  const lockExpiresAt = new Date(Date.now() + lockMinutes * 60000).toISOString().replace("T", " ").slice(0, 19);
+  const claim = await env.DB
+    .prepare(
+      `UPDATE users SET locked_by_requester_id = ?, lock_expires_at = ?
+       WHERE ${ELIGIBLE_SQL}
+         AND id = ?`
+    )
+    .bind(requester.id, lockExpiresAt, bloodGroup, requester.id, requester.id, bloodGroup, donorId)
+    .run();
+  if (!claim.meta || claim.meta.changes !== 1) {
+    await writeQueue(env.KV, requester.id, bloodGroup, remaining, lockMinutes);
+    return err("ডোনারটি আর পাওয়া যাচ্ছে না", 409, { code: "unavailable" });
+  }
+
+  // Rate limit counts here (when a donor is actually shown), not on prefetch.
+  const limitMinutes = settingInt(settings, "call_limit_minutes", 15);
+  const limitCount = settingInt(settings, "call_limit_count", 20);
+  const rate = await checkAndBumpRateLimit(env.KV, requester.id, limitCount, limitMinutes);
+  if (!rate.allowed) {
+    await env.DB.prepare("UPDATE users SET locked_by_requester_id = NULL, lock_expires_at = NULL WHERE id = ? AND locked_by_requester_id = ?").bind(donorId, requester.id).run();
+    return err(
+      `আপনার লিমিট শেষ হয়েছে। আপনি ${limitMinutes} মিনিট এর মধ্যে সর্বোচ্চ ${limitCount} জন ডোনারের সাথে যোগাযোগ করতে পারবেন। অনুগ্রহ করে অপেক্ষা করুন।`,
+      429,
+      { retryAfterSeconds: rate.retryAfterSeconds }
+    );
+  }
+
+  // The final donor SELECT doesn't need any of these three writes to have
+  // finished first (it only needs donorId, already known), so it runs
+  // alongside them instead of waiting for all three to land first.
+  const [donor] = await Promise.all([
+    env.DB.prepare(`${DONOR_WITH_COUNT_SQL} WHERE u.id = ?`).bind(donorId).first(),
+    setLock(env.KV, requester.id, donorId, lockMinutes, bloodGroup),
+    env.DB
+      .prepare("INSERT OR IGNORE INTO seek_exclusions (requester_id, donor_id, blood_group, created_at) VALUES (?, ?, ?, ?)")
+      .bind(requester.id, donorId, bloodGroup, nowIso())
+      .run(),
+    writeQueue(env.KV, requester.id, bloodGroup, remaining, lockMinutes),
+  ]);
+  return ok({ donor: donorPublicShape(donor, settings), bloodGroup });
+}
 
 // A call can flip a donor's eligibility a person might want to correct
 // (e.g. tapped "রক্ত দিতে পারবে না" by mistake). This lets the requester

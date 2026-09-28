@@ -18,7 +18,7 @@ export default {
       const path = url.pathname;
 
       if (path.startsWith("/api/")) {
-        return await routeApi(request, env, path);
+        return await routeApi(request, env, path, ctx);
       }
 
       // Static assets (css/js/img/etc) are served as-is. HTML documents -
@@ -32,7 +32,7 @@ export default {
       // with not_found_handling = "single-page-application" essentially
       // never fires for a normal "/" load - assetResp already resolves
       // index.html directly and was returned unmodified, which is why the
-      // static "BloodNet v2" title/favicon would flash regardless of what
+      // static "Blood Network" title/favicon would flash regardless of what
       // was set in site settings.
       const assetResp = await env.ASSETS.fetch(request);
       const isHtml = (assetResp.headers.get("content-type") || "").includes("text/html");
@@ -244,7 +244,7 @@ async function seekBrandOverride(env, url, siteTitle) {
   }
 }
 
-async function routeApi(request, env, path) {
+async function routeApi(request, env, path, ctx) {
   const method = request.method;
   const seg = path.split("/").filter(Boolean); // ['api', ...]
 
@@ -262,6 +262,8 @@ async function routeApi(request, env, path) {
   if (path === "/api/seek/count" && method === "GET") return seek.handleSeekCount(request, env);
   if (path === "/api/seek/state" && method === "GET") return seek.handleSeekState(request, env);
   if (path === "/api/seek/lock" && method === "POST") return seek.handleSeekLock(request, env);
+  if (path === "/api/seek/prefetch" && method === "POST") return seek.handleSeekPrefetch(request, env, ctx);
+  if (path === "/api/seek/claim" && method === "POST") return seek.handleSeekClaim(request, env, ctx);
   if (path === "/api/seek/call-status" && method === "POST") return seek.handleSeekCallStatus(request, env);
   if (path === "/api/seek/donor-number" && method === "GET") return seek.handleSeekDonorNumber(request, env);
   if (path === "/api/seek/external-sources" && method === "GET") return seek.handleExternalSources(request, env);

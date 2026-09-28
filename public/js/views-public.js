@@ -363,9 +363,19 @@ let SEEK_CALL_IDS = {};
 // ভুল হয়েছে?". Re-shown from memory (no request) when they come back.
 let SEEK_PENDING_NEXT = null;
 
+// Small client-side cache of the NEXT donor(s) the server has already
+// prepared for this requester+bloodGroup (masked-preview only - see
+// donorPreviewShape on the backend). Not locked, doesn't count toward the
+// call limit; a donor is only actually "shown" once /api/seek/claim
+// confirms it's still available. The very first donor of a search is never
+// served from here - it always comes from /api/seek/lock - prefetching
+// only starts once that first donor is on screen.
+let SEEK_QUEUE = { bloodGroup: null, candidates: [] };
+
 async function startDonorSearch(view, bloodGroup) {
   SEEK_CALL_IDS = {};
   SEEK_PENDING_NEXT = null;
+  SEEK_QUEUE = { bloodGroup: null, candidates: [] };
   view.innerHTML = "";
   const box = h("div");
   view.appendChild(box);
@@ -389,20 +399,64 @@ const NOT_CALLED_REASONS = [
   { key: "other", label: "অন্যান্য" },
 ];
 
+// Takes (removes) the next preview candidate queued for this blood group,
+// or null if none is cached - the caller falls back to a normal /lock.
+function takeQueuedCandidate(bloodGroup) {
+  if (SEEK_QUEUE.bloodGroup !== bloodGroup || !SEEK_QUEUE.candidates.length) return null;
+  return SEEK_QUEUE.candidates.shift();
+}
+
+// Fire-and-forget: asks the server to top up the prefetch queue for the
+// NEXT donor(s) while the current one is on screen. Errors are ignored -
+// worst case the queue stays empty and the next donor falls back to /lock,
+// which is exactly today's behaviour.
+async function prefetchNext(bloodGroup) {
+  try {
+    const res = await API.post("/api/seek/prefetch", { bloodGroup });
+    if (SEEK_QUEUE.bloodGroup !== bloodGroup) SEEK_QUEUE = { bloodGroup, candidates: [] };
+    SEEK_QUEUE.candidates = (res.candidates || []).filter((c) => c && c.id);
+  } catch {
+    /* ignore - normal /lock fallback covers it */
+  }
+}
+
 async function showNextDonor(box, bloodGroup, prev) {
   box.innerHTML = "";
   setLoading(box);
-  let res;
-  try {
-    res = await API.post("/api/seek/lock", { bloodGroup });
-  } catch (e) {
-    box.innerHTML = "";
-    if (e.status === 429) {
-      box.appendChild(h("div", { class: "card center stack" }, [icon("timer"), h("p", {}, e.message)]));
-    } else {
-      box.appendChild(errorBanner(e.message));
+
+  // From the 2nd donor onward, try the prefetch queue first: claim is a
+  // single atomic step (lock + rate-limit + exclusion), so it's exactly as
+  // safe as /lock, just usually already-warm. Any failure here (donor taken
+  // by someone else, no longer eligible, queue empty/stale) falls straight
+  // back to a normal /lock call with no visible difference to the user -
+  // except a real rate-limit hit, which is shown as-is.
+  const candidate = takeQueuedCandidate(bloodGroup);
+  let res = null;
+  if (candidate) {
+    try {
+      res = await API.post("/api/seek/claim", { bloodGroup, donorId: candidate.id });
+    } catch (e) {
+      if (e.status === 429) {
+        box.innerHTML = "";
+        box.appendChild(h("div", { class: "card center stack" }, [icon("timer"), h("p", {}, e.message)]));
+        return;
+      }
+      res = null; // fall through to /lock below
     }
-    return;
+  }
+
+  if (!res) {
+    try {
+      res = await API.post("/api/seek/lock", { bloodGroup });
+    } catch (e) {
+      box.innerHTML = "";
+      if (e.status === 429) {
+        box.appendChild(h("div", { class: "card center stack" }, [icon("timer"), h("p", {}, e.message)]));
+      } else {
+        box.appendChild(errorBanner(e.message));
+      }
+      return;
+    }
   }
   box.innerHTML = "";
 
@@ -418,6 +472,8 @@ async function showNextDonor(box, bloodGroup, prev) {
   }
 
   renderDonorCard(box, res.donor, bloodGroup, res.alreadyCalled, { prev });
+  // Warm up the NEXT donor while this one is on screen.
+  prefetchNext(bloodGroup);
 }
 
 // Returns to the donor that was showing before the requester reopened the
