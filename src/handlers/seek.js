@@ -197,7 +197,7 @@ export async function handleSeekLock(request, env) {
 //    old pending entry) - directly targets that exact row, ownership-
 //    checked, with no lock requirement at all, since by the time someone
 //    is updating history from that page the seek session is long over.
-const VALID_CALL_STATUSES = new Set(["no_answer", "not_picked_up", "cannot_donate", "can_donate", "not_called"]);
+const VALID_CALL_STATUSES = new Set(["no_answer", "not_picked_up", "cannot_donate", "can_donate", "not_called", "skipped"]);
 
 export async function handleSeekCallStatus(request, env) {
   const requester = await getCurrentUser(request, env);
@@ -205,13 +205,13 @@ export async function handleSeekCallStatus(request, env) {
   const body = await readJson(request);
   const { donorId, callId, status } = body;
   if (!VALID_CALL_STATUSES.has(status)) return err("অবৈধ ষ্ট্যাটাস");
-  // The "কাষ্টম ব্যখ্যা" free-text reason (not_called only) is capped at
-  // 30 chars, matching the frontend input's maxlength - trimmed and
-  // hard-capped server-side too so a direct API call can't bypass the UI
-  // limit. Fixed reason keys (note_reason, blood_not_needed, other,
+  // The "কাষ্টম ব্যখ্যা" free-text reason (not_called only) is
+  // capped at 100 chars, matching the frontend input's maxlength - trimmed
+  // and hard-capped server-side too so a direct API call can't bypass the
+  // UI limit. Fixed reason keys (note_reason, blood_not_needed, other,
   // not_yet_eligible, etc) pass through untouched since they're well
-  // under 30 chars anyway.
-  const cannotReason = typeof body.cannotReason === "string" ? body.cannotReason.trim().slice(0, 30) : body.cannotReason;
+  // under 100 chars anyway.
+  const cannotReason = typeof body.cannotReason === "string" ? body.cannotReason.trim().slice(0, 100) : body.cannotReason;
 
   if (callId) {
     const row = await env.DB.prepare("SELECT id, donor_id, status FROM calls WHERE id = ? AND requester_id = ?").bind(callId, requester.id).first();
@@ -250,8 +250,14 @@ export async function handleSeekCallStatus(request, env) {
     .prepare("INSERT INTO calls (requester_id, donor_id, blood_group, status, cannot_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
     .bind(requester.id, donor.id, donor.blood_group, status, cannotReason || null, nowIso(), nowIso())
     .run();
-  await env.DB.prepare("UPDATE users SET total_calls_made = total_calls_made + 1 WHERE id = ?").bind(requester.id).run();
-  await env.DB.prepare("UPDATE users SET total_calls_received = total_calls_received + 1 WHERE id = ?").bind(donor.id).run();
+  // "skipped" means the requester explicitly chose NOT to call this donor -
+  // counting it toward "calls made/received" would misrepresent both
+  // sides' stats (a donor's "total calls received" should mean calls, not
+  // skips), so these counters only move for every other status.
+  if (status !== "skipped") {
+    await env.DB.prepare("UPDATE users SET total_calls_made = total_calls_made + 1 WHERE id = ?").bind(requester.id).run();
+    await env.DB.prepare("UPDATE users SET total_calls_received = total_calls_received + 1 WHERE id = ?").bind(donor.id).run();
+  }
   return applyCallStatus(env, requester, donor.id, ins.meta.last_row_id, false, status, cannotReason, lock, true);
 }
 

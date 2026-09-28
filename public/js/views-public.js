@@ -374,7 +374,7 @@ const CANNOT_REASONS = [
 // rendered below as its own button that reveals an input field.
 const NOT_CALLED_REASONS = [
   { key: "note_reason", label: "নোটের কারণে" },
-  { key: "blood_not_needed", label: "রক্ত প্রয়োজন নেই" },
+  { key: "blood_not_needed", label: "ডোনারের লোকেশন দূরে" },
   { key: "other", label: "অন্যান্য" },
 ];
 
@@ -424,15 +424,18 @@ function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
   if (donor.note) card.appendChild(h("div", { class: "donor-card__note" }, `নোট: ${donor.note}`));
 
   const callBtn = h("button", { class: "btn btn-primary" }, [icon("phone", "small"), " কল করুন (" + donor.mobileMasked + ")"]);
+  const skipBtn = h("button", { class: "btn btn-outline", style: "margin-top:8px" }, [icon("skip-forward", "small"), " স্কিপ করুন"]);
   const whatsappBtn = h("a", { class: "btn btn-outline", style: "display:none;margin-top:8px", target: "_blank", rel: "noopener" }, [icon("message-square", "small"), " হোয়াটসঅ্যাপে ওপেন করুন"]);
   const statusBox = h("div", { style: "display:none;margin-top:14px" });
   card.appendChild(callBtn);
+  card.appendChild(skipBtn);
   card.appendChild(whatsappBtn);
   card.appendChild(statusBox);
   box.appendChild(card);
 
   const timerSeconds = (APP.settings && APP.settings.callStatusTimerSeconds) || 20;
   let revealed = false;
+  let countdownTimer = null; // so skipBtn can cancel an in-progress countdown
 
   // Builds the wa.me link for the real (unmasked) number - only ever
   // called once the number is actually known (see the two call sites
@@ -468,8 +471,23 @@ function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
     callBtn.dataset.needsNumber = "1";
     statusBox.dataset.started = "1";
     statusBox.style.display = "block";
-    renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn);
+    skipBtn.style.display = "none";
+    skipBtn.dataset.callLocked = "1";
+    renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn, skipBtn);
   }
+
+  // Jumps straight to the same sub-reason screen "কল করিনি" uses (just a
+  // different header/status - see renderSkippedReasons), without ever
+  // requiring the requester to reveal the number or dial first. Works even
+  // if a call countdown is already running - cancels it rather than being
+  // blocked by statusBox.dataset.started, since skipping is meant to always
+  // be available as an alternative to the call flow, not just before it.
+  skipBtn.onclick = () => {
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    statusBox.dataset.started = "1";
+    statusBox.style.display = "block";
+    renderSkippedReasons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn, skipBtn);
+  };
 
   callBtn.onclick = async () => {
     // The button stays enabled/visible even after the timer elapses so the
@@ -496,18 +514,25 @@ function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
     }
     window.location.href = `tel:${callBtn.dataset.mobile}`;
 
+    // Skipping is an alternative TO calling - once a call has been placed
+    // it no longer applies, so the skip button goes away (and stays away
+    // even if the status is later corrected, see submitCallStatus).
+    skipBtn.style.display = "none";
+    skipBtn.dataset.callLocked = "1";
+
     if (statusBox.dataset.started) return; // countdown/status UI only starts once
     statusBox.dataset.started = "1";
     let seconds = timerSeconds;
     const timerLine = h("p", { class: "center small muted" }, `${toBnDigits(seconds)} সেকেন্ড পর ষ্ট্যাটাস আপডেট করতে পারবেন…`);
     statusBox.style.display = "block";
     statusBox.appendChild(timerLine);
-    const timer = setInterval(() => {
+    countdownTimer = setInterval(() => {
       seconds--;
       if (seconds <= 0) {
-        clearInterval(timer);
+        clearInterval(countdownTimer);
+        countdownTimer = null;
         timerLine.remove();
-        renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn);
+        renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn, skipBtn);
       } else {
         timerLine.textContent = `${toBnDigits(seconds)} সেকেন্ড পর ষ্ট্যাটাস আপডেট করতে পারবেন…`;
       }
@@ -520,7 +545,7 @@ function renderDonorCard(box, donor, bloodGroup, alreadyCalled) {
     h("a", { href: "#", onclick: (e) => { e.preventDefault(); renderBloodGroupStep(document.getElementById("view")); } }, "আবার শুরু")));
 }
 
-function renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn) {
+function renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn, skipBtn) {
   statusBox.innerHTML = "";
   statusBox.appendChild(h("p", { class: "small muted" }, "কলের পর ষ্ট্যাটাস জানান:"));
   const options = [
@@ -532,68 +557,83 @@ function renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, wha
   ];
   const row = h("div", { class: "stack" });
   options.forEach((opt) => {
-    row.appendChild(h("button", { class: "btn btn-outline", onclick: () => handleCallStatus(statusBox, box, donor, bloodGroup, opt.key, callBtn, whatsappBtn) }, opt.label));
+    row.appendChild(h("button", { class: "btn btn-outline", onclick: () => handleCallStatus(statusBox, box, donor, bloodGroup, opt.key, callBtn, whatsappBtn, skipBtn) }, opt.label));
   });
   statusBox.appendChild(row);
   statusBox.appendChild(h("p", { class: "small muted", style: "margin-top:10px" },
     "আপনার প্রদত্ত ষ্ট্যাটাস এর মাধ্যমে সিদ্ধান্ত নেয়া হবে এই ডোনারের তথ্য অন্যান্য সিকারদের কাছে দেখানো হবে কি না"));
 }
 
-async function handleCallStatus(statusBox, box, donor, bloodGroup, status, callBtn, whatsappBtn) {
+async function handleCallStatus(statusBox, box, donor, bloodGroup, status, callBtn, whatsappBtn, skipBtn) {
   if (status === "cannot_donate") {
     statusBox.innerHTML = "";
     const card = h("div", { class: "stack" });
     card.appendChild(h("h3", {}, "কেন রক্ত দিতে পারবেন না?"));
     CANNOT_REASONS.forEach((r) => {
-      card.appendChild(h("button", { class: "btn btn-outline", onclick: () => submitCallStatus(statusBox, box, donor, bloodGroup, status, r.key, callBtn, whatsappBtn) }, r.label));
+      card.appendChild(h("button", { class: "btn btn-outline", onclick: () => submitCallStatus(statusBox, box, donor, bloodGroup, status, r.key, callBtn, whatsappBtn, skipBtn) }, r.label));
     });
     statusBox.appendChild(card);
     return;
   }
   if (status === "not_called") {
-    renderNotCalledReasons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn);
+    renderNotCalledReasons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn, skipBtn);
     return;
   }
-  await submitCallStatus(statusBox, box, donor, bloodGroup, status, null, callBtn, whatsappBtn);
+  await submitCallStatus(statusBox, box, donor, bloodGroup, status, null, callBtn, whatsappBtn, skipBtn);
 }
 
-// "কল করিনি" sub-question - three fixed reasons (all submitted
-// immediately on tap, "অন্যান্য" included) plus a separate "কাষ্টম ব্যখ্যা"
-// button below them that reveals a free-text field (up to 30 chars) with
-// its own submit button - that's the only option here needing typed text.
-function renderNotCalledReasons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn) {
+// Shared by "কল করিনি" (not_called) and "স্কিপ করুন" (skipped) - identical
+// three fixed reasons - only the recorded status value and the question
+// header differ. The free-text "কাষ্টম ব্যখ্যা" option (up to 100 chars) is
+// offered for "কল করিনি" only, not for a skip.
+function renderReasonSubScreen(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn, skipBtn, status, headerText) {
   statusBox.innerHTML = "";
   const card = h("div", { class: "stack" });
-  card.appendChild(h("h3", {}, "কেন কল করেননি?"));
+  card.appendChild(h("h3", {}, headerText));
   NOT_CALLED_REASONS.forEach((r) => {
-    card.appendChild(h("button", { class: "btn btn-outline", onclick: () => submitCallStatus(statusBox, box, donor, bloodGroup, "not_called", r.key, callBtn, whatsappBtn) }, r.label));
+    card.appendChild(h("button", { class: "btn btn-outline", onclick: () => submitCallStatus(statusBox, box, donor, bloodGroup, status, r.key, callBtn, whatsappBtn, skipBtn) }, r.label));
   });
 
-  const customField = h("input", { type: "text", maxlength: "30", placeholder: "নিজে লিখুন (সর্বোচ্চ ৩০ অক্ষর)", style: "display:none;margin-top:6px" });
-  const submitCustomBtn = h("button", { class: "btn btn-primary", style: "display:none;margin-top:6px", onclick: () => {
-    const text = customField.value.trim();
-    if (!text) { toast("লিখুন"); return; }
-    submitCallStatus(statusBox, box, donor, bloodGroup, "not_called", text, callBtn, whatsappBtn);
-  } }, "সাবমিট করুন");
-  customField.oninput = () => { submitCustomBtn.style.display = customField.value.trim() ? "block" : "none"; };
-  card.appendChild(h("button", { class: "btn btn-outline", onclick: () => { customField.style.display = "block"; customField.focus(); } }, "কাষ্টম ব্যখ্যা"));
-  card.appendChild(customField);
-  card.appendChild(submitCustomBtn);
+  if (status !== "skipped") {
+    const customField = h("input", { type: "text", maxlength: "100", placeholder: "নিজে লিখুন", style: "display:none;margin-top:6px" });
+    const submitCustomBtn = h("button", { class: "btn btn-primary", style: "display:none;margin-top:6px", onclick: () => {
+      const text = customField.value.trim();
+      if (!text) { toast("লিখুন"); return; }
+      submitCallStatus(statusBox, box, donor, bloodGroup, status, text, callBtn, whatsappBtn, skipBtn);
+    } }, "সাবমিট করুন");
+    customField.oninput = () => { submitCustomBtn.style.display = customField.value.trim() ? "block" : "none"; };
+    card.appendChild(h("button", { class: "btn btn-outline", onclick: () => { customField.style.display = "block"; customField.focus(); } }, "কাষ্টম ব্যখ্যা"));
+    card.appendChild(customField);
+    card.appendChild(submitCustomBtn);
+  }
 
   statusBox.appendChild(card);
 }
 
-async function submitCallStatus(statusBox, box, donor, bloodGroup, status, cannotReason, callBtn, whatsappBtn) {
+function renderNotCalledReasons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn, skipBtn) {
+  renderReasonSubScreen(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn, skipBtn, "not_called", "কেন কল করেননি?");
+}
+
+// Recorded as its own "skipped" status (never "not_called") even though it
+// reuses the exact same reason sub-screen - see the comment on
+// STATUS_LABELS_BN.skipped in callLabels.js for why they're kept distinct.
+function renderSkippedReasons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn, skipBtn) {
+  renderReasonSubScreen(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn, skipBtn, "skipped", "কেন স্কিপ করেছেন?");
+}
+
+async function submitCallStatus(statusBox, box, donor, bloodGroup, status, cannotReason, callBtn, whatsappBtn, skipBtn) {
   try {
     await API.post("/api/seek/call-status", { donorId: donor.id, status, cannotReason });
   } catch (e) { toast(e.message); return; }
 
-  // Once a status is recorded, the call button AND the WhatsApp button are
-  // both hidden - re-messaging/re-dialing from this card is no longer
-  // offered unless the requester explicitly says the status was a mistake
-  // and picks again ("ভুল হয়েছে? আবার নির্বাচন করুন"), which restores both.
+  // Once a status is recorded, the call button, the WhatsApp button, AND
+  // the skip button are all hidden - re-messaging/re-dialing/skipping from
+  // this card is no longer offered unless the requester explicitly says the
+  // status was a mistake and picks again ("ভুল হয়েছে? আবার নির্বাচন করুন"),
+  // which restores all three.
   if (callBtn) callBtn.style.display = "none";
   if (whatsappBtn) whatsappBtn.style.display = "none";
+  if (skipBtn) skipBtn.style.display = "none";
 
   statusBox.innerHTML = "";
   const resultCard = h("div", { class: "center stack" });
@@ -608,7 +648,8 @@ async function submitCallStatus(statusBox, box, donor, bloodGroup, status, canno
       onclick: () => {
         if (callBtn) callBtn.style.display = "";
         if (whatsappBtn && whatsappBtn.href) whatsappBtn.style.display = "inline-flex";
-        renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn);
+        if (skipBtn && !skipBtn.dataset.callLocked) skipBtn.style.display = "";
+        renderCallStatusButtons(statusBox, box, donor, bloodGroup, callBtn, whatsappBtn, skipBtn);
       },
     }, "ভুল হয়েছে? আবার নির্বাচন করুন"));
     resultCard.appendChild(h("button", { class: "btn btn-primary", onclick: () => showNextDonor(box, bloodGroup) }, "পরবর্তী ডোনার দেখুন"));
@@ -652,8 +693,8 @@ async function renderDonorInfoForm(box) {
     try {
       await API.post("/api/profile/become-donor", { bloodGroup, lastDonationDate: dateField.value || null, addressSummary: addrField.value });
       APP.user.isDonor = true;
-      toast("ধন্যবাদ! আপনি এখন একজন ডোনার।");
-      navigate("/profile");
+      toast("ধন্যবাদ। আপনি এখন একজন ডোনার। রক্তদানে প্রস্তুত থাকলে অনুগ্রহ করে সুইচ চালু করে দিন!");
+      navigate("/quick");
     } catch (e) { toast(e.message); } finally { submitBtn.disabled = false; }
   };
 }

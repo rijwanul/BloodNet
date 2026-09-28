@@ -101,6 +101,29 @@ main { flex: 1; padding: 20px 18px 8px; }
 /* ---------- cards & layout ---------- */
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); overflow-wrap: break-word; }
 .card--flat { box-shadow: none; }
+/* Availability switch is ON: soft green wash + glow on the whole card. The
+   tint is deliberately much lighter than --accent-tint (the "চালু আছে" chip's
+   background) and the switch's --accent, so those two still read as the
+   vibrant elements against it. */
+.card--on {
+  background: linear-gradient(135deg, rgba(31, 122, 92, 0.09) 0%, rgba(31, 122, 92, 0.03) 100%), var(--surface);
+  border-color: rgba(31, 122, 92, 0.4);
+  box-shadow: 0 0 0 3px rgba(31, 122, 92, 0.08), 0 6px 22px rgba(31, 122, 92, 0.2);
+  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+/* Availability switch is OFF: same treatment in the theme's red. The plain
+   rgba lines are a fallback (the default theme red) for browsers without
+   color-mix(); the color-mix lines that follow follow whatever theme color
+   is set in Site Settings. */
+.card--off {
+  background: linear-gradient(135deg, rgba(178, 30, 51, 0.08) 0%, rgba(178, 30, 51, 0.025) 100%), var(--surface);
+  border-color: rgba(178, 30, 51, 0.35);
+  box-shadow: 0 0 0 3px rgba(178, 30, 51, 0.07), 0 6px 22px rgba(178, 30, 51, 0.16);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 8%, transparent) 0%, color-mix(in srgb, var(--primary) 2.5%, transparent) 100%), var(--surface);
+  border-color: color-mix(in srgb, var(--primary) 35%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 7%, transparent), 0 6px 22px color-mix(in srgb, var(--primary) 16%, transparent);
+  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
 
 /* Clickable list rows (e.g. মাল্টিসাইট ব্র্যান্ডিং domain list) - a plain
    .card with a click handler needs a visible affordance, since the
@@ -398,4 +421,4 @@ details[open] > .stat-see-more-toggle::before { transform: rotate(90deg); }
   .admin-nav a { display: flex; align-items: center; gap: 8px; justify-content: flex-start; }
   .admin-content { flex: 1; min-width: 0; }
   .stat-grid { grid-template-columns: repeat(3, 1fr); }
-                            }
+}

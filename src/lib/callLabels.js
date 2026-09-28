@@ -5,6 +5,13 @@ export const STATUS_LABELS_BN = {
   cannot_donate: "রক্ত দিতে পারবেন না",
   can_donate: "রক্ত দিতে পারবেন",
   not_called: "কল করিনি",
+  // Recorded when the requester taps "স্কিপ করুন" straight from the donor
+  // card instead of calling at all - deliberately a separate status from
+  // not_called (not just a reason under it) so donors/admins can tell "I
+  // decided not to call this person" apart from "I called but skipped
+  // reporting why". Shares the same reason sub-screen/keys as not_called
+  // (see NOT_CALLED_REASON_LABELS_BN below and its use in statusLabel).
+  skipped: "স্কিপ করেছেন",
 };
 
 export const CANNOT_REASON_LABELS_BN = {
@@ -27,7 +34,7 @@ export const CANNOT_REASON_LABELS_BN = {
 // stored value as-is when it's custom text (i.e. not one of these keys).
 export const NOT_CALLED_REASON_LABELS_BN = {
   note_reason: "নোটের কারণে",
-  blood_not_needed: "রক্ত প্রয়োজন নেই",
+  blood_not_needed: "ডোনারের লোকেশন দূরে", // key name kept as-is (internal id, unchanged) - label text updated
   other: "অন্যান্য",
 };
 
@@ -39,7 +46,7 @@ export function statusLabel(status, cannotReason) {
   let t = STATUS_LABELS_BN[status] || status;
   if (status === "cannot_donate" && cannotReason) {
     t += ` (${CANNOT_REASON_LABELS_BN[cannotReason] || cannotReason})`;
-  } else if (status === "not_called" && cannotReason) {
+  } else if ((status === "not_called" || status === "skipped") && cannotReason) {
     t += ` (${NOT_CALLED_REASON_LABELS_BN[cannotReason] || cannotReason})`;
   }
   return t;

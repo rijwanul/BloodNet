@@ -73,6 +73,7 @@ const CALL_STATUS_LABELS = {
   cannot_donate: "রক্ত দিতে পারবে না",
   can_donate: "রক্ত দিতে পারবে",
   not_called: "কল করিনি",
+  skipped: "স্কিপ করেছেন",
 };
 
 // Small self-contained horizontal bar chart, built as inline SVG - the app
@@ -563,7 +564,14 @@ ViewsAdmin.telegramBots = async function (view) {
             h("button", { class: "btn btn-sm btn-outline", onclick: () => openBotForm(b) }, "এডিট"),
             h("button", { class: "btn btn-sm btn-danger", onclick: async () => {
               const sure = await confirmModal(`"${b.name}" বটটি ডিলিট করবেন? এটি টেলিগ্রাম থেকেও আনরেজিস্টার হয়ে যাবে।`);
-              if (sure) { await API.del(`/api/admin/telegram-bots/${b.id}`); toast("ডিলিট হয়েছে"); load(); }
+              if (!sure) return;
+              try {
+                await API.del(`/api/admin/telegram-bots/${b.id}`);
+                toast("ডিলিট হয়েছে");
+                load();
+              } catch (e) {
+                toast(e.message);
+              }
             } }, "ডিলিট"),
           ]),
         ]),

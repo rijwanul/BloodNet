@@ -43,7 +43,10 @@ ViewsAccount.quick = async function (view) {
 
 async function renderEligibilityToggleSection(view, status) {
   const { eligibilityStatus, snoozeUntil, snoozeReason } = status;
-  const card = h("div", { class: "card" });
+  // card--on / card--off give the whole card a soft green / red tint and
+  // glow (see app.css). "snoozed" (সাময়িক বন্ধ) stays neutral. The class is
+  // also updated live below as the switch is flipped.
+  const card = h("div", { class: "card" + (eligibilityStatus === "on" ? " card--on" : eligibilityStatus === "off" ? " card--off" : "") });
   const toggleRow = h("div", { class: "toggle-row" });
   const badge = h("span", {
     class: "badge " + (eligibilityStatus === "on" ? "badge-on" : eligibilityStatus === "snoozed" ? "badge-snoozed" : "badge-off"),
@@ -82,12 +85,16 @@ async function renderEligibilityToggleSection(view, status) {
   ]));
 
   cb.onchange = async () => {
+    // Turning ON is optimistic; turning OFF drops the green and waits for
+    // the snooze/off choice (which re-renders the card with the right class).
+    card.classList.toggle("card--on", cb.checked);
+    card.classList.remove("card--off");
     if (cb.checked) {
       try {
         await API.post("/api/donor/eligibility", { action: "on" });
         toast("এলিজিবিলিটি চালু হয়েছে");
         ViewsAccount.quick(view);
-      } catch (e) { toast(e.message); cb.checked = false; }
+      } catch (e) { toast(e.message); cb.checked = false; card.classList.remove("card--on"); card.classList.toggle("card--off", eligibilityStatus === "off"); }
     } else {
       renderSnoozeOptions(snoozeArea, view);
     }
@@ -811,7 +818,7 @@ function renderInlineStatusUpdate(row, c, body) {
 
 // "কল করিনি" sub-question - three fixed reasons (all submitted
 // immediately, "অন্যান্য" included) plus a separate "কাষ্টম ব্যখ্যা" button
-// that reveals a free-text field (up to 30 chars) - same pattern as the
+// that reveals a free-text field (up to 100 chars) - same pattern as the
 // seek-flow card.
 function renderInlineNotCalledReasons(wrap, c, body) {
   wrap.innerHTML = "";
@@ -819,7 +826,7 @@ function renderInlineNotCalledReasons(wrap, c, body) {
     wrap.appendChild(h("button", { class: "btn btn-outline btn-sm", onclick: () => submitInlineStatus(wrap, c, "not_called", r.key, body) }, r.label));
   });
 
-  const customField = h("input", { type: "text", maxlength: "30", placeholder: "নিজে লিখুন (সর্বোচ্চ ৩০ অক্ষর)", style: "display:none;margin-top:6px" });
+  const customField = h("input", { type: "text", maxlength: "100", placeholder: "নিজে লিখুন", style: "display:none;margin-top:6px" });
   const submitCustomBtn = h("button", { class: "btn btn-primary btn-sm", style: "display:none;margin-top:6px", onclick: () => {
     const text = customField.value.trim();
     if (!text) { toast("লিখুন"); return; }

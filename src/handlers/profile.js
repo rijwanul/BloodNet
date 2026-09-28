@@ -178,18 +178,13 @@ export async function handleBecomeDonor(request, env) {
   const body = await readJson(request);
   if (!isValidBloodGroup(body.bloodGroup)) return err("সঠিক রক্তের গ্রুপ দিন");
 
-  const settings = await getSettings(env.DB);
-  const waitMonths = parseInt(settings.eligibility_wait_months || "3", 10);
-  let eligibilityStatus = "on";
-  let snoozeUntil = null;
-  if (body.lastDonationDate && waitMonths > 0) {
-    const until = new Date(body.lastDonationDate);
-    until.setMonth(until.getMonth() + waitMonths);
-    if (until.getTime() > Date.now()) {
-      eligibilityStatus = "snoozed";
-      snoozeUntil = until.toISOString().replace("T", " ").slice(0, 19);
-    }
-  }
+  // A new donor always starts with availability OFF - they must turn the
+  // switch on themselves (the frontend tells them so and sends them to the
+  // Quick tab). last_donation_date is still stored below; it is no longer
+  // used to auto-snooze a brand-new donor, since a snooze would flip
+  // availability ON by itself once it expires.
+  const eligibilityStatus = "off";
+  const snoozeUntil = null;
 
   await env.DB
     .prepare(
